@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>Elden Earth</title>
+<meta name="description" content="Walk the real world, claim the tile beneath your feet." />
+
+<!-- Free Open-Source MapLibre Engine (100% Drop-In Replacement for Mapbox, No Token Lock) -->
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>window.mapboxgl = maplibregl;</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css" />
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+
+<!-- PWA Manifest & App Icons -->
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#111827" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="apple-touch-icon" href="assets/icon.png" />
+</head>
+<body>
+
+<!-- ===================== PORTRAIT MODE GUARD ===================== -->
+<div id="portrait-guard">
+  <div class="portrait-guard-card">
+    <div class="portrait-guard-icon">📱</div>
+    <h2>Portrait Mode Only</h2>
+    <p>Please rotate your phone vertically to continue playing Elden Earth.</p>
+  </div>
+</div>
+
+<!-- ===================== SIGN-IN SCREEN ===================== -->
+<div id="signin-screen" class="screen">
+  <div class="signin-card">
+    <div class="brand">
+      <div class="brand-gem">◆</div>
+      <h1>Elden Earth</h1>
+      <p class="tagline">Claim the ground you walk on.</p>
+    </div>
+    <div id="g_id_signin_slot" class="google-slot"></div>
+    <button id="guest-btn" class="btn btn-primary">Play as Guest</button>
+    <p class="fine-print">Guest data is saved only on this device.</p>
+  </div>
+</div>
+
+<!-- ===================== BOOT / LOADING SCREEN ===================== -->
+<div id="loading-screen" class="screen hidden">
+  <div class="loader-card">
+    <div class="loader-gem-wrap">
+      <div class="loader-gem">◆</div>
+      <div class="loader-ring"></div>
+    </div>
+    <h2 class="loader-title">ELDEN EARTH</h2>
+    <p class="loader-sub">Connecting to the Realm</p>
+
+    <!-- Progress Bar -->
+    <div class="loader-bar-outer">
+      <div id="loader-progress-bar" class="loader-bar-inner"></div>
+    </div>
+    
+    <div class="loader-meta-row">
+      <span id="loader-status-text" class="loader-status">> Initializing systems...</span>
+      <span id="loader-percent-text" class="loader-percent">0%</span>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== GAME SCREEN ===================== -->
+<div id="game-screen" class="screen hidden">
+
+  <!-- Top status bar -->
+  <div id="topbar">
+    <!-- Hero Simulated Cash Balance Bar -->
+    <div class="hero-balance-card" id="hero-balance-card">
+      <div class="hero-top-line">
+        <div class="hero-brand-title">
+          <span class="hero-brand-gem">◆</span> ELDEN EARTH <span class="hero-version-tag">v1.2.0</span>
+        </div>
+        <div id="boost-timer-badge" class="boost-timer-badge hidden">⚡ 30X BOOST <span id="boost-countdown">00:00:00</span></div>
+      </div>
+      <div class="hero-balance-value" id="stat-cash">
+        <span class="cash-dollar">$</span><span class="cash-point">.</span><span class="cash-decimal">000000000000000</span>
+      </div>
+    </div>
+
+    <!-- Secondary Stats Arranged Beneath (EB, Diamonds, Income, Menu) -->
+    <div class="substats-row">
+      <div class="player-chip">
+        <span id="player-avatar">🙂</span>
+        <span id="player-name">Traveler</span>
+      </div>
+
+      <div class="sub-stat">
+        <span class="stat-label">Elden Bucks</span>
+        <span class="stat-value" id="stat-eb">150 EB</span>
+      </div>
+
+      <div class="sub-stat">
+        <span class="stat-label">Diamonds</span>
+        <span class="stat-value" id="stat-diamonds">0 ◆</span>
+      </div>
+
+      <div class="sub-stat">
+        <span class="stat-label">Income</span>
+        <span class="stat-value" id="stat-rate">$0.00000000/s</span>
+      </div>
+
+      <button id="menu-btn" class="icon-btn menu-btn-wrap" aria-label="Menu">
+        ☰
+        <span id="menu-unread-dot" class="menu-unread-dot hidden"></span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Map -->
+  <div id="map"></div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- Floating +2 EB Boost Button -->
+  <button id="boost-btn" class="boost-btn hidden">
+    <span class="boost-icon">⚡</span>
+    <span class="boost-text">+2 EB</span>
+  </button>
+
+  <!-- Permanent 30X/50X Multiplier Button -->
+  <button id="multiplier-btn" class="multiplier-btn">
+    <span class="mult-tag" id="mult-label">30X</span>
+    <span class="mult-sub">BOOST</span>
+  </button>
+
+  <!-- Unified Side HUD Stack (Extractor + Leaderboard + Calendar) -->
+  <div class="side-hud-stack">
+    <!-- Diamond Extractor Quick Button -->
+    <button id="extractor-hud-btn" class="side-hud-btn extractor-btn hidden" aria-label="Diamond Extractor">
+      <div id="extractor-unread-dot" class="calendar-red-dot hidden"></div>
+      <div class="side-hud-card extractor-hud-card">
+        <svg viewBox="0 0 32 38" class="extractor-hud-svg">
+          <polygon points="16,2 29,12 16,16 3,12" fill="#d4fbf6"/>
+          <polygon points="3,12 16,16 16,36" fill="#1d7a6e"/>
+          <polygon points="29,12 16,16 16,36" fill="#4fd6c4"/>
+          <polygon points="16,2 20,8 16,16 12,8" fill="#ffffff"/>
+        </svg>
+      </div>
+      <span class="side-hud-subtext">Mine</span>
+    </button>
+
+    <!-- Leaderboard Button -->
+    <button id="leaderboard-btn" class="side-hud-btn leaderboard-btn" aria-label="Leaderboards">
+      <div class="side-hud-card trophy-card">
+        <span class="trophy-emoji">🏆</span>
+      </div>
+      <span class="side-hud-subtext">Ranks</span>
+    </button>
+
+    <!-- Daily Login Calendar Button -->
+    <button id="calendar-btn" class="side-hud-btn calendar-btn" aria-label="Daily Calendar">
+      <div id="calendar-unread-dot" class="calendar-red-dot hidden"></div>
+      <div class="side-hud-card calendar-icon-card">
+        <div class="cal-card-top" id="cal-hud-month">SEP</div>
+        <div class="cal-card-body" id="cal-hud-day">4</div>
+      </div>
+    </button>
+  </div>
+
+  <!-- Permanent Collapsable Worldwide Feed Card -->
+  <div id="live-feed-card" class="live-feed-card">
+    <div id="feed-interactive-header" class="feed-header-line" title="Tap to toggle feed">
+      <div class="feed-title-wrap">
+        <span class="feed-badge">Feed:</span>
+        <span class="feed-dot"></span>
+        <span id="feed-unread-badge" class="feed-unread-pill hidden">0</span>
+      </div>
+      <button id="feed-toggle-icon" class="feed-toggle-btn" aria-label="Toggle Feed">▴</button>
+    </div>
+    <div id="feed-scroll-container" class="feed-scroll-container">
+      <div class="feed-empty-msg">Connecting to live feed...</div>
+    </div>
+  </div>
+
+  <!-- Floating Done Pill (Appears centered right above BUY LAND & EARN buttons) -->
+  <div id="buy-mode-banner" class="buy-mode-banner hidden">
+    <span class="buy-mode-instruction">Tap tile to claim (100 EB)</span>
+    <button id="exit-buy-mode-btn" class="btn btn-exit-buy">Done ✓</button>
+  </div>
+
+  <!-- Bottom bar -->
+  <div id="bottombar">
+    <button id="recenter-btn" class="round-btn" aria-label="Recenter">𖤓</button>
+    <button id="buy-land-mode-btn" class="btn btn-buy-land">Buy Land</button>
+    <button id="earn-btn" class="btn btn-earn">Earn</button>
+    <button id="land-btn" class="round-btn" aria-label="My Land">▦</button>
+  </div>
+</div>
+
+<!-- ===================== SPIN WHEEL MODAL ===================== -->
+<div id="wheel-modal" class="modal hidden">
+  <div class="modal-card wheel-card">
+    <button class="close-btn" data-close="wheel-modal">✕</button>
+    <h2>Diamond Wheel</h2>
+    <p class="modal-sub">2 <span class="hud-gem-icon"></span> per spin</p>
+    <div class="wheel-wrap">
+      <div class="wheel-pointer">▼</div>
+      <canvas id="wheel-canvas" width="320" height="320"></canvas>
+    </div>
+    <button id="spin-btn" class="btn btn-primary">Spin (2 <span class="hud-gem-icon"></span>)</button>
+    <p id="wheel-result" class="wheel-result"></p>
+  </div>
+</div>
+
+<!-- ===================== LAND / STATS MODAL ===================== -->
+<div id="land-modal" class="modal hidden">
+  <div class="modal-card">
+    <button class="close-btn" data-close="land-modal">✕</button>
+    <h2>My Land</h2>
+    <div class="land-stats">
+      <div class="land-stat"><span id="land-count">0</span><label>Plots owned</label></div>
+      <div class="land-stat"><span id="land-rate">0.00000000</span><label>EB / sec</label></div>
+    </div>
+    <div class="rarity-legend">
+      <div><i class="swatch common"></i>Common (<span id="count-common">0</span>) — 50% — $0.0000000011/s</div>
+      <div><i class="swatch rare"></i>Rare (<span id="count-rare">0</span>) — 30% — $0.000000016/s</div>
+      <div><i class="swatch epic"></i>Epic (<span id="count-epic">0</span>) — 15% — $0.000000022/s</div>
+      <div><i class="swatch legendary"></i>Legendary (<span id="count-legendary">0</span>) — 5% — $0.000000044/s</div>
+    </div>
+    <p class="fine-print">Tap any unclaimed tile on the map (zoom in close) to buy it for 100 EB. Rarity is random.</p>
+  </div>
+</div>
+
+<!-- ===================== PLAYER INFO MODAL ===================== -->
+<div id="player-info-modal" class="modal hidden">
+  <div class="modal-card player-info-card">
+    <button class="close-btn" data-close="player-info-modal">✕</button>
+    <h2>Player Info</h2>
+    
+    <!-- Profile Row with ✎ Edit Pencil -->
+    <div class="profile-header-card">
+      <div class="avatar-edit-wrapper">
+        <div id="info-avatar" class="info-avatar">🙂</div>
+        <button id="edit-avatar-btn" class="edit-avatar-badge" title="Change 3D Character">✎</button>
+      </div>
+      <div class="info-name-box">
+        <span id="info-name" class="info-player-name">Traveler</span>
+        <button id="edit-name-btn" class="edit-name-badge" title="Change Player Name">✎</button>
+      </div>
+    </div>
+
+    <!-- Total Rent Accrued -->
+    <div class="info-section">
+      <div class="info-section-title">TOTAL RENT ACCRUED:</div>
+      <div class="info-cash-box">
+        <span class="cash-icon">📈</span>
+        <span id="info-total-rent" class="info-cash-val">$0.000000000000000</span>
+      </div>
+    </div>
+
+    <!-- Mayorship & Regional Dividends Section -->
+    <div class="info-section">
+      <div class="info-section-title">MAYORSHIP & DIVIDENDS:</div>
+      <div class="info-mayor-card">
+        <div class="mayor-status-row">
+          <span class="mayor-crown-pill" id="info-mayor-status">👑 Mayor of Phoenix, AZ</span>
+          <span class="dividend-rate-pill">2% Royalty</span>
+        </div>
+        <div class="mayor-dividend-row">
+          <span class="dividend-label">Lifetime Dividends Collected:</span>
+          <strong class="dividend-val" id="info-total-dividends">0 EB</strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- Plots / Parcels Owned Grid -->
+    <div class="info-section">
+      <div class="info-section-title">PLOTS OWNED:</div>
+      <div class="parcels-grid-wrap">
+        <div class="parcel-total-box">
+          <div class="parcel-icon">🏞️</div>
+          <span class="parcel-total-label">TOTAL</span>
+          <strong id="info-total-plots" class="parcel-total-num">0</strong>
+        </div>
+
+        <div class="rarity-badges-grid">
+          <div class="rarity-badge common">
+            <span id="info-count-common" class="badge-num">0</span>
+            <span class="badge-label">COMMON</span>
+          </div>
+          <div class="rarity-badge rare">
+            <span id="info-count-rare" class="badge-num">0</span>
+            <span class="badge-label">RARE</span>
+          </div>
+          <div class="rarity-badge epic">
+            <span id="info-count-epic" class="badge-num">0</span>
+            <span class="badge-label">EPIC</span>
+          </div>
+          <div class="rarity-badge legendary">
+            <span id="info-count-legendary" class="badge-num">0</span>
+            <span class="badge-label">LEGENDARY</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== CHARACTER WARDROBE MODAL ===================== -->
+<div id="wardrobe-modal" class="modal hidden">
+  <div class="modal-card">
+    <button class="close-btn" data-close="wardrobe-modal">✕</button>
+    <h2>3D Wardrobe</h2>
+    <p class="modal-sub">Select your 3D explorer model.</p>
+    <div id="wardrobe-grid" class="wardrobe-grid"></div>
+  </div>
+</div>
+
+<!-- ===================== DIAMOND EXTRACTOR MODAL ===================== -->
+<div id="extractor-modal" class="modal hidden">
+  <div class="modal-card extractor-card">
+    <button class="close-btn" data-close="extractor-modal">✕</button>
+    <div class="extractor-glow-icon">
+      <svg viewBox="0 0 32 38" style="width:38px;height:46px;display:inline-block;filter:drop-shadow(0 0 10px #4fd6c4);">
+        <polygon points="16,2 29,12 16,16 3,12" fill="#d4fbf6"/>
+        <polygon points="3,12 16,16 16,36" fill="#1d7a6e"/>
+        <polygon points="29,12 16,16 16,36" fill="#4fd6c4"/>
+        <polygon points="16,2 20,8 16,16 12,8" fill="#ffffff"/>
+      </svg>
+    </div>
+    <h2>Diamond Extractor</h2>
+    <p class="modal-sub">Automated mining beacon for your home base.</p>
+
+    <!-- State: Not Built Yet -->
+    <div id="extractor-unbuilt-view" class="extractor-view hidden">
+      <div class="extractor-status-box">
+        <p>Construct an automated extractor on your territory to harvest free diamonds while offline.</p>
+        <div class="req-line">Requirements: <strong>5+ Connected Plots (Limit 1 Base)</strong></div>
+        <div class="req-line">Build Cost: <strong>50 EB</strong></div>
+      </div>
+      <button id="build-extractor-btn" class="btn btn-primary">Build Extractor (50 EB)</button>
+    </div>
+
+    <!-- State: Active & Mining -->
+    <div id="extractor-active-view" class="extractor-view hidden">
+      <div class="extractor-status-box">
+        <div class="stat-row">
+          <span>Status:</span>
+          <strong class="teal-text">⚡ Mining Active</strong>
+        </div>
+        <div class="stat-row">
+          <span>Rate:</span>
+          <strong>1 <span class="hud-gem-icon"></span> / 10 Mins</strong>
+        </div>
+        <div class="stat-row">
+          <span>Next Diamond In:</span>
+          <strong id="extractor-next-timer" class="gold-text">00:10:00</strong>
+        </div>
+        <div class="stat-row">
+          <span>Ready to Collect:</span>
+          <strong id="extractor-stored-count" class="diamond-ready-val">0 / 50 <span class="hud-gem-icon"></span></strong>
+        </div>
+      </div>
+      <button id="collect-extractor-btn" class="btn btn-primary">Collect All (0 <span class="hud-gem-icon"></span>)</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== CONFIRM BUY MODAL ===================== -->
+<div id="buy-modal" class="modal hidden">
+  <div class="modal-card">
+    <button class="close-btn" data-close="buy-modal">✕</button>
+    <h2>Claim Land</h2>
+    <p class="modal-sub">Expand your realm with a new 10x10 ft plot.</p>
+    <div class="buy-modal-cost">
+      <span>Cost</span>
+      <strong>100 EB</strong>
+    </div>
+    <div class="modal-actions">
+      <button id="buy-cancel-btn" class="btn btn-secondary">Cancel</button>
+      <button id="buy-confirm-btn" class="btn btn-primary">Claim Tile</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== REALM GUIDE / HOW TO PLAY MODAL ===================== -->
+<div id="menu-modal" class="modal hidden">
+  <div class="modal-card guide-modal-card">
+    <button class="close-btn" data-close="menu-modal">✕</button>
+    <div class="guide-header-icon">📜</div>
+    <h2>How to Play</h2>
+    <p class="modal-sub">Master the Realm of Elden Earth</p>
+
+    <!-- Cash Out Teaser Banner -->
+    <div class="cashout-teaser-card">
+      <div class="cashout-icon">💵</div>
+      <div class="cashout-info">
+        <strong>Cash Out Coming Soon!</strong>
+        <span>Real PayPal / Crypto payouts self-funded by community game treasury ad revenue!</span>
+      </div>
+    </div>
+
+    <!-- Step-by-Step Guide Cards -->
+    <div class="guide-steps-list">
+      
+      <div class="guide-card">
+        <div class="guide-card-icon">💎</div>
+        <div class="guide-card-text">
+          <strong>1. Collect 3D Diamonds</strong>
+          <span>Walk the real world. When glowing 3D crystals appear inside your collection circle, tap them to collect!</span>
+        </div>
+      </div>
+
+      <div class="guide-card">
+        <div class="guide-card-icon">🎡</div>
+        <div class="guide-card-text">
+          <strong>2. Spin the Fortune Wheel</strong>
+          <span>Spend diamonds on the Earn Wheel for Elden Bucks (EB). Hit jackpots of 25 EB or 50 EB!</span>
+        </div>
+      </div>
+
+      <div class="guide-card">
+        <div class="guide-card-icon">🗺️</div>
+        <div class="guide-card-text">
+          <strong>3. Claim Real 10×10 ft Parcels</strong>
+          <span>Tap <strong>BUY LAND</strong> to swoop into flat 2D view. Claim any tile within your radius for 100 EB!</span>
+        </div>
+      </div>
+
+      <div class="guide-card">
+        <div class="guide-card-icon">📈</div>
+        <div class="guide-card-text">
+          <strong>4. Passive Rent ($USD) Forever</strong>
+          <span>Every tile earns real-time cash every 0.5s, ticking even when the app is completely closed.</span>
+        </div>
+      </div>
+
+      <div class="guide-card">
+        <div class="guide-card-icon">⚡</div>
+        <div class="guide-card-text">
+          <strong>5. Keep 30X Boost Active</strong>
+          <span>Tap the glowing <strong>30X BOOST</strong> button to stack up to 6 hours of supercharged 30X rent earnings.</span>
+        </div>
+      </div>
+
+      <div class="guide-card">
+        <div class="guide-card-icon">⛏️</div>
+        <div class="guide-card-text">
+          <strong>6. Automated Diamond Extractor</strong>
+          <span>Own <strong>5+ connected plots</strong> to construct your Extractor base! Automatically mines free diamonds while you sleep. After you reach 1.00 balance Upgrade it with your Cash Balance to mine faster!</span>
+        </div>
+      </div>
+
+      <div class="guide-card">
+        <div class="guide-card-icon">👑</div>
+        <div class="guide-card-text">
+          <strong>7. Become Mayor & Earn 2% Dividends</strong>
+          <span>Own the most land in any city to claim the Mayor crown and earn a 2% dividend on all land bought by other players!</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Reddit Community & Support Card -->
+    <a href="https://www.reddit.com/r/eldenEarthMobile/" target="_blank" rel="noopener noreferrer" class="community-support-card">
+      <div class="community-icon-wrap">💬</div>
+      <div class="community-content">
+        <div class="comm-badge">Official Community</div>
+        <strong>Join r/eldenEarthMobile</strong>
+        <span>Share game ideas, vote on roadmap features, get support, and talk with other landlords!</span>
+      </div>
+      <div class="community-arrow">➔</div>
+    </a>
+
+    <button class="btn btn-primary" data-close="menu-modal" style="margin-top: 14px;">Got It! Let's Play</button>
+    <button id="reset-btn" class="btn btn-danger" style="margin-top: 10px; font-size: 13px; padding: 10px;">Reset Device Save Data</button>
+  </div>
+</div>
+
+<!-- ===================== BOOSTER MODAL ===================== -->
+<div id="booster-modal" class="modal hidden">
+  <div class="modal-card booster-card">
+    <button class="close-btn" data-close="booster-modal">✕</button>
+    <div class="booster-icon-wrap">⚡</div>
+    <h2 id="booster-modal-title">Activate 30X Boost</h2>
+    <p class="modal-sub">Supercharge your realm's income for 1 hour!</p>
+    <div class="booster-info-box">
+      <div>Multiplier: <strong id="modal-mult-rate" class="gold-text">30X Income</strong></div>
+      <div>Duration: <strong>+1 Hour</strong></div>
+      <div>Max Bank: <strong>Up to 6 Hours</strong></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" data-close="booster-modal">Cancel</button>
+      <button id="activate-boost-btn" class="btn btn-primary">Activate Boost</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== LEADERBOARD & MAYORS MODAL ===================== -->
+<div id="leaderboard-modal" class="modal hidden">
+  <div class="modal-card leaderboard-modal-card">
+    <button class="close-btn" data-close="leaderboard-modal">✕</button>
+    <div class="leaderboard-header">
+      <span class="lb-header-trophy">🏆</span>
+      <h2>Realm Rankings</h2>
+      <p class="modal-sub">Top Landlords, Earners & Reigning Mayors</p>
+    </div>
+
+    <!-- 5 Segmented Tabs -->
+    <div class="lb-tabs-row">
+      <button class="lb-tab-btn active" data-tab="plots">🗺️ Plots</button>
+      <button class="lb-tab-btn" data-tab="rent">💰 Rent</button>
+      <button class="lb-tab-btn" data-tab="mayors">👑 Mayors</button>
+      <button class="lb-tab-btn" data-tab="governors">🏛️ Governors</button>
+      <button class="lb-tab-btn" data-tab="presidents">🦅 Presidents</button>
+    </div>
+
+    <!-- Scrollable Leaderboard List -->
+    <div id="leaderboard-list" class="leaderboard-list">
+      <div class="feed-empty-msg">Loading realm rankings...</div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 30-DAY DAILY LOGIN CALENDAR MODAL ===================== -->
+<div id="calendar-modal" class="modal hidden">
+  <div class="modal-card calendar-modal-card">
+    <button class="close-btn" data-close="calendar-modal">✕</button>
+    <div class="calendar-modal-header">
+      <span class="cal-modal-icon">📅</span>
+      <h2>Daily Rewards</h2>
+      <p class="modal-sub">Log in daily to claim scaling Elden Bucks!</p>
+    </div>
+    <div id="calendar-days-list" class="calendar-days-list">
+      <!-- Generated dynamically in main.js -->
+    </div>
+  </div>
+</div>
+
+<div id="signout-wrap" style="display:none">
+  <button id="signout-btn">Sign out</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+
+<!-- Firebase SDKs (Global Compat) -->
+<script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-firestore-compat.js"></script>
+
+<script src="js/config.js"></script>
+<script src="js/geo.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/diamonds.js"></script>
+<script src="js/grid.js"></script>
+<script src="js/loading.js"></script>
+<script src="js/character.js"></script>
+<script src="js/wheel.js"></script>
+<script src="js/feed.js"></script>
+<script src="js/leaderboard.js"></script>
+<script src="js/foliage.js"></script>
+<script src="js/main.js"></script>
+
+<!-- Service Worker Registration with Instant Auto-Update -->
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
+      .then((reg) => {
+        // Check for updates every time page is opened
+        reg.update();
+        console.log('[SW] Registered & Checked for updates.');
+      })
+      .catch(err => console.warn('[SW] Registration error:', err));
+  });
+
+  // Automatically refresh the page when a new service worker version activates
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!refreshing) {
+      refreshing = true;
+      window.location.reload();
+    }
+  });
+}
+</script>
+</body>
+</html>
