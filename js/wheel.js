@@ -127,12 +127,19 @@ const Wheel = (() => {
     return 0;
   }
 
-  let isCurrentlySpinning = false;
+let isCurrentlySpinning = false;
+let spinTimeoutId = null;
 
-  // Spins to weighted slice with realistic landing animation & failsafe recovery
+// Spins to weighted slice with realistic landing animation & failsafe recovery
   function spin(callback) {
     if (isCurrentlySpinning) return;
     isCurrentlySpinning = true;
+
+    // Clear any leftover timeout from a previous aborted spin
+    if (spinTimeoutId !== null) {
+      clearTimeout(spinTimeoutId);
+      spinTimeoutId = null;
+    }
 
     const n = CONFIG.WHEEL_SLICES.length;
     const sliceDeg = 360 / n;
@@ -159,6 +166,8 @@ const Wheel = (() => {
       finished = true;
       isCurrentlySpinning = false;
       canvas.removeEventListener("transitionend", finishSpin);
+      if (spinTimeoutId === canvas) clearTimeout(spinTimeoutId);
+      spinTimeoutId = null;
       callback(CONFIG.WHEEL_SLICES[targetIndex]);
     };
 
@@ -166,7 +175,15 @@ const Wheel = (() => {
     canvas.addEventListener("transitionend", finishSpin, { once: true });
 
     // Failsafe backup timer: Resolves spin even if browser backgrounded or interrupted
-    setTimeout(finishSpin, 4300);
+    spinTimeoutId = setTimeout(finishSpin, 4300);
+  }
+
+  function resetSpinningState() {
+    isCurrentlySpinning = false;
+    if (spinTimeoutId !== null) {
+      clearTimeout(spinTimeoutId);
+      spinTimeoutId = null;
+    }
   }
 
   return { init, spin };
