@@ -1134,7 +1134,7 @@
       const isGuest = state.player && state.player.id && state.player.id.startsWith("guest-");
       
       if (isGuest) {
-        showToast("Buy a plot with Google sign-in to own land permanently and save progress across devices!");
+        showToast("YOU ARE A GUEST IN THIS REALM — sign in using Google to unlock plot ownership and save progress across devices!");
         return;
       }
       
@@ -1253,7 +1253,8 @@ el("spin-btn").addEventListener("click", () => {
       const cost = isGuest ? (CONFIG.SPIN_COST_DIAMONDS || 1) * 2 : CONFIG.SPIN_COST_DIAMONDS || 1;
       
       if ((Number(state.diamonds) || 0) < cost) {
-        showToast(`Not enough diamonds — go find some!${isGuest ? " (Guests pay 4 diamonds per spin)" : ""}`);
+        const msg = isGuest ? "YOU ARE A GUEST IN THIS REALM — sign in using Google to unlock plot ownership!" : "Not enough diamonds — go find some!";
+        showToast(msg);
         return;
       }
 
