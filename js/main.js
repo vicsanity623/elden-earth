@@ -488,6 +488,15 @@
       // 4. Initialize Core Game Subsystems
       Grid.init(map, {
         onBuyAttempt: (success, rarity) => {
+          const state = Store.get();
+          const isGuest = state.player && state.player.id && state.player.id.startsWith("guest-");
+          
+          if (isGuest) {
+            showToast("Buy a plot with Google sign-in to own land permanently and save progress across devices!");
+            Grid.setBuyMode(false);
+            return;
+          }
+          
           if (success) {
             showToast(`Claimed a ${rarity.label} plot!`);
             updateTopbar();
@@ -1120,6 +1129,15 @@
 
     function enterBuyLandMode() {
       if (!map || !currentPos) return;
+      
+      const state = Store.get();
+      const isGuest = state.player && state.player.id && state.player.id.startsWith("guest-");
+      
+      if (isGuest) {
+        showToast("Buy a plot with Google sign-in to own land permanently and save progress across devices!");
+        return;
+      }
+      
       buyBanner?.classList.remove("hidden");
       Grid.setBuyMode(true, currentPos);
 
@@ -1228,12 +1246,14 @@ document.querySelectorAll(".modal").forEach(modal => {
       });
     }
 
-    el("spin-btn").addEventListener("click", () => {
+el("spin-btn").addEventListener("click", () => {
       const state = Store.get();
-      const cost = CONFIG.SPIN_COST_DIAMONDS || 1;
-
+      const isGuest = state.player && state.player.id && state.player.id.startsWith("guest-");
+      // Guests pay double the diamond cost to discourage farming
+      const cost = isGuest ? (CONFIG.SPIN_COST_DIAMONDS || 1) * 2 : CONFIG.SPIN_COST_DIAMONDS || 1;
+      
       if ((Number(state.diamonds) || 0) < cost) {
-        showToast("Not enough diamonds — go find some!");
+        showToast(`Not enough diamonds — go find some!${isGuest ? " (Guests pay 4 diamonds per spin)" : ""}`);
         return;
       }
 
