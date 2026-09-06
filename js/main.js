@@ -240,28 +240,10 @@
   }
 
   function beginWatch() {
-    // Clear any existing watch
-    if (watchId) {
-      navigator.geolocation.clearWatch(watchId);
-      watchId = null;
-    }
-    
-    // Set up watch with error handling
-    const options = { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 };
-    
     watchId = navigator.geolocation.watchPosition(
       (pos) => handlePosition(pos.coords),
-      (err) => {
-        console.warn("watchPosition error", err);
-        // If repeated timeouts, stop watching and inform user
-        if (err.code === 3) { // TIMEOUT
-          console.warn("[Geolocation] Position timeout - stopping watch. Enable location services or go outdoors.");
-          navigator.geolocation.clearWatch(watchId);
-          watchId = null;
-          el("locate-status").textContent = "Location timeout — please enable GPS and try again, or use the map without location tracking.";
-        }
-      },
-      options
+      (err) => console.warn("watchPosition error", err),
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
     );
   }
 
@@ -1120,15 +1102,6 @@
 
     function enterBuyLandMode() {
       if (!map || !currentPos) return;
-      
-      const state = Store.get();
-      const isGuest = state.player && state.player.id && state.player.id.startsWith("guest-");
-      
-      if (isGuest) {
-        showToast("YOU ARE A GUEST IN THIS REALM — sign in using Google to unlock plot ownership and save progress across devices!");
-        return;
-      }
-      
       buyBanner?.classList.remove("hidden");
       Grid.setBuyMode(true, currentPos);
 
@@ -1216,31 +1189,12 @@
       modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
     });
 
-    // --- Google Account Linking for Guest Players ---
-    const googleLinkBtn = el("google-link-btn");
-    if (googleLinkBtn) {
-      googleLinkBtn.addEventListener("click", () => {
-        // If Google ID is already initialized, just prompt the account chooser.
-        // Avoid re-calling Auth.init() which can reset state and cause the
-        // player info modal to keep showing guest data.
-        if (window.google && window.google.accounts && window.google.accounts.id) {
-          window.google.accounts.id.prompt();
-        } else {
-          // Fallback: re-initialize Auth if GSI not yet loaded
-          Auth.init(onSignedIn);
-        }
-      });
-    }
-
-el("spin-btn").addEventListener("click", () => {
+    el("spin-btn").addEventListener("click", () => {
       const state = Store.get();
-      const isGuest = state.player && state.player.id && state.player.id.startsWith("guest-");
-      // Guests pay double the diamond cost to discourage farming
-      const cost = isGuest ? (CONFIG.SPIN_COST_DIAMONDS || 1) * 2 : CONFIG.SPIN_COST_DIAMONDS || 1;
-      
+      const cost = CONFIG.SPIN_COST_DIAMONDS || 1;
+
       if ((Number(state.diamonds) || 0) < cost) {
-        const msg = isGuest ? "YOU ARE A GUEST IN THIS REALM — sign in using Google to unlock plot ownership!" : "Not enough diamonds — go find some!";
-        showToast(msg);
+        showToast("Not enough diamonds — go find some!");
         return;
       }
 
