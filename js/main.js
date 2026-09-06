@@ -1204,7 +1204,7 @@
       el("spin-btn").disabled = true;
       el("wheel-result").textContent = "Spinning...";
 
-      Wheel.spin((slice) => {
+Wheel.spin((slice) => {
         const s = Store.get();
         if (!slice) return;
 
@@ -1219,37 +1219,29 @@
           el("wheel-result").textContent = "Your diamond found its way back to you. (◆ +1)";
           showToast("💎 +1 Diamond Refunded!");
 
-          // Auto-close wheel modal & launch flying gem to HUD
-          setTimeout(() => {
-            closeModal("wheel-modal");
-            spawnFlyingGemToHUD(originX, originY);
-          }, 800);
+          // Launch flying gem to HUD (modal stays open)
+          spawnFlyingGemToHUD(originX, originY);
 
         } else if (slice.type === "miss") {
           el("wheel-result").textContent = "Better luck next time! (No reward)";
           showToast("🚫 Nothing this time — keep searching!");
 
-          // Auto-close wheel modal on miss
-          setTimeout(() => {
-            closeModal("wheel-modal");
-          }, 1200);
+          // Launch flying gem to HUD (modal stays open)
+          spawnFlyingGemToHUD(originX, originY);
 
         } else {
           const winAmount = Number(slice.amount) || 0;
           s.eb = (Number(s.eb) || 0) + winAmount;
           el("wheel-result").textContent = `🎉 You won ${winAmount} EB!`;
-          showToast(`🎉 Won +${winAmount} Elden Bucks!`);
+          showToast(`🎉 Won +${winAmount} Elden Bucks!`;
 
           // Broadcast 25 EB or 50 EB Jackpots worldwide!
           if (winAmount >= 25 && typeof Feed !== "undefined") {
             Feed.broadcast("jackpot", { amount: winAmount });
           }
 
-          // Auto-close wheel modal & launch cascading EB shower
-          setTimeout(() => {
-            closeModal("wheel-modal");
-            launchFlyingEBStream(originX, originY, winAmount);
-          }, 850);
+          // Launch cascading EB shower (modal stays open)
+          launchFlyingEBStream(originX, originY, winAmount);
         }
 
         Store.save();
