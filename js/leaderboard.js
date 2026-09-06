@@ -23,6 +23,13 @@ const Leaderboard = (() => {
     const stateCounts = {};   // state -> { ownerId -> count }
     const countryCounts = {}; // country -> { ownerId -> count }
 
+    // Mapping of State codes to Full Names
+    const STATE_NAMES = {
+      "AZ": "Arizona", "OH": "Ohio", "IL": "Illinois", "PR": "Puerto Rico",
+      "CA": "California", "NY": "New York", "TX": "Texas", "FL": "Florida",
+      "BC": "British Columbia", "ON": "Ontario", "QC": "Quebec"
+    };
+
     for (const tid in allPlots) {
       const p = allPlots[tid];
       const oid = p.ownerId || "unknown";
@@ -38,40 +45,45 @@ const Leaderboard = (() => {
       }
       playerStats[oid].plotsCount++;
 
-      // Territory resolution with coordinate fallback
-      let city = p.city;
-      let stateName = p.state;
-      let country = p.country || "United States 🇺🇸";
-
-      if (!city) {
+      // 1. Normalize City Name (Eliminates duplicates like Phoenix AR vs AZ)
+      let rawCity = p.city || "";
+      if (!rawCity) {
         const cMerc = Geo.fromMercator(
           p.tx * CONFIG.TILE_SIZE_METERS + CONFIG.TILE_SIZE_METERS / 2,
           p.ty * CONFIG.TILE_SIZE_METERS + CONFIG.TILE_SIZE_METERS / 2
         );
-        if (cMerc.lon > -85 && cMerc.lon < -80 && cMerc.lat > 39 && cMerc.lat < 42) {
-          city = "Warren Township, OH 🇺🇸";
-          stateName = "Ohio 🇺🇸";
-        } else if (cMerc.lon > -1 && cMerc.lon < 2 && cMerc.lat > 43 && cMerc.lat < 46) {
-          city = "Mont-de-Marsan, FR 🇫🇷";
-          stateName = "Nouvelle-Aquitaine 🇫🇷";
-          country = "France 🇫🇷";
-        } else {
-          city = "Phoenix, AZ 🇺🇸";
-          stateName = "Arizona 🇺🇸";
-        }
+        if (cMerc.lon > -85 && cMerc.lon < -80) rawCity = "Warren Township, OH 🇺🇸";
+        else if (cMerc.lon > -1 && cMerc.lon < 2) rawCity = "Mont-de-Marsan, FR 🇫🇷";
+        else rawCity = "Phoenix, AZ 🇺🇸";
       }
 
-      // City Aggregation
-      if (!cityCounts[city]) cityCounts[city] = {};
-      cityCounts[city][oid] = (cityCounts[city][oid] || 0) + 1;
+      // Fix legacy "Phoenix, AR" typo -> "Phoenix, AZ"
+      if (rawCity.includes("Phoenix, AR")) rawCity = "Phoenix, AZ 🇺🇸";
+      if (rawCity.includes("Nanaimo, British Columbia")) rawCity = "Nanaimo, BC 🇨🇦";
 
-      // State Aggregation
-      if (stateName) {
-        if (!stateCounts[stateName]) stateCounts[stateName] = {};
-        stateCounts[stateName][oid] = (stateCounts[stateName][oid] || 0) + 1;
+      // 2. Extract State & Country automatically from city string
+      let stateName = p.state;
+      let country = p.country;
+
+      if (!stateName || !country) {
+        if (rawCity.includes("OH")) { stateName = "Ohio 🇺🇸"; country = "United States 🇺🇸"; }
+        else if (rawCity.includes("AZ")) { stateName = "Arizona 🇺🇸"; country = "United States 🇺🇸"; }
+        else if (rawCity.includes("IL")) { stateName = "Illinois 🇺🇸"; country = "United States 🇺🇸"; }
+        else if (rawCity.includes("Puerto Rico")) { stateName = "Puerto Rico 🇺🇸"; country = "United States 🇺🇸"; }
+        else if (rawCity.includes("🇨🇦") || rawCity.includes("BC")) { stateName = "British Columbia 🇨🇦"; country = "Canada 🇨🇦"; }
+        else if (rawCity.includes("🇫🇷") || rawCity.includes("FR")) { stateName = "Nouvelle-Aquitaine 🇫🇷"; country = "France 🇫🇷"; }
+        else { stateName = "Arizona 🇺🇸"; country = "United States 🇺🇸"; }
       }
 
-      // Country Aggregation
+      // City Aggregation (Cleaned & De-duplicated)
+      if (!cityCounts[rawCity]) cityCounts[rawCity] = {};
+      cityCounts[rawCity][oid] = (cityCounts[rawCity][oid] || 0) + 1;
+
+      // State Aggregation (Governors)
+      if (!stateCounts[stateName]) stateCounts[stateName] = {};
+      stateCounts[stateName][oid] = (stateCounts[stateName][oid] || 0) + 1;
+
+      // Country Aggregation (Presidents)
       if (!countryCounts[country]) countryCounts[country] = {};
       countryCounts[country][oid] = (countryCounts[country][oid] || 0) + 1;
     }
