@@ -1534,7 +1534,8 @@
     checkAndShowAntiCheatWarning();
     // --- Session Initialization: Prevent multi-tab EB farming ---
     // Generate a unique session ID for this tab/player combination
-    const currentSessionId = generateSessionId();
+    // Format: "sess_timestamp_randomString" (matches storage.js generateSessionId logic)
+    const currentSessionId = "sess_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
     // Only set session if player is signed in (Google)
     // This will be wired up in Auth.init callback
     window._eldenSessionId = currentSessionId;
