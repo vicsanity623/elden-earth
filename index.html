@@ -86,7 +86,7 @@
     <div class="hero-balance-card" id="hero-balance-card">
       <div class="hero-top-line">
         <div class="hero-brand-title">
-          <span class="hero-brand-gem">◆</span> ELDEN EARTH <span class="hero-version-tag">v1.2.1.D1</span>
+          <span class="hero-brand-gem">◆</span> ELDEN EARTH <span class="hero-version-tag">v1.2.1.D2</span>
         </div>
         <div id="boost-timer-badge" class="boost-timer-badge hidden">⚡ 30X BOOST <span id="boost-countdown">00:00:00</span></div>
       </div>
@@ -118,9 +118,41 @@
       </div>
 
       <button id="menu-btn" class="icon-btn menu-btn-wrap" aria-label="Menu">
-        ☰
-        <span id="menu-unread-dot" class="menu-unread-dot hidden"></span>
-      </button>
+          ☰
+          <span id="menu-unread-dot" class="menu-unread-dot hidden"></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Community Globe Button (Right edge under Income capsule) -->
+    <button id="globe-hud-btn" class="globe-hud-btn" title="Community Globe">
+      <div class="globe-icon-ring">
+        <div class="globe-svg-wrap">
+          <svg viewBox="0 0 36 36" class="globe-svg">
+            <defs>
+              <radialGradient id="globeGrad" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stop-color="#4fd6c4"/>
+                <stop offset="70%" stop-color="#1b5a52"/>
+                <stop offset="100%" stop-color="#0b2420"/>
+              </radialGradient>
+            </defs>
+            <circle cx="18" cy="18" r="16" fill="url(#globeGrad)" stroke="#4fd6c4" stroke-width="1.5"/>
+            <ellipse cx="18" cy="18" rx="8" ry="16" fill="none" stroke="#a8f5ec" stroke-width="1" stroke-opacity="0.6"/>
+            <line x1="2" y1="18" x2="34" y2="18" stroke="#a8f5ec" stroke-width="1" stroke-opacity="0.6"/>
+            <ellipse cx="18" cy="18" rx="16" ry="7" fill="none" stroke="#a8f5ec" stroke-width="1" stroke-opacity="0.4"/>
+          </svg>
+        </div>
+      </div>
+      <span class="globe-hud-label">GLOBE</span>
+    </button>
+
+    <!-- Return from Space Banner (Appears only in Globe Mode) -->
+    <div id="globe-mode-banner" class="globe-mode-banner hidden">
+      <div class="globe-banner-left">
+        <span class="globe-banner-title">🌐 Realm Globe View</span>
+        <span class="globe-banner-sub">Free Worldwide Exploration</span>
+      </div>
+      <button id="exit-globe-btn" class="btn btn-return-base">Return to Base ➔</button>
     </div>
   </div>
 
