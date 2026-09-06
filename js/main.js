@@ -1211,6 +1211,10 @@
 
     el("spin-btn").addEventListener("click", () => {
       const state = Store.get();
+      if (state.player.id && state.player.id.startsWith("guest-")) {
+        alert("YOU ARE A GUEST IN THIS REALM. Sign in with Google to spin the wheel.");
+        return;
+      }
       const cost = CONFIG.SPIN_COST_DIAMONDS || 1;
 
       if ((Number(state.diamonds) || 0) < cost) {
