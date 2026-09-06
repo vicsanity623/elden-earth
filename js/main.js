@@ -488,15 +488,6 @@
       // 4. Initialize Core Game Subsystems
       Grid.init(map, {
         onBuyAttempt: (success, rarity) => {
-          const state = Store.get();
-          const isGuest = state.player && state.player.id && state.player.id.startsWith("guest-");
-          
-          if (isGuest) {
-            showToast("Buy a plot with Google sign-in to own land permanently and save progress across devices!");
-            Grid.setBuyMode(false);
-            return;
-          }
-          
           if (success) {
             showToast(`Claimed a ${rarity.label} plot!`);
             updateTopbar();
@@ -1199,12 +1190,6 @@
         spinBtn.disabled = false;
       }
       openModal("wheel-modal");
-      // Update wheel balance display
-      const state = Store.get();
-      const diamondEl = el("wheel-balance")?.querySelector(".wheel-diamonds");
-      const ebEl = el("wheel-balance")?.querySelector(".wheel-eb");
-      if (diamondEl) diamondEl.innerHTML = `${Number(state.diamonds) || 0} <span class="hud-gem-icon"></span>`;
-      if (ebEl) ebEl.textContent = `${Math.floor(Number(state.eb) || 0)} EB`;
     });
     el("land-btn").addEventListener("click", () => { updateLandModal(); openModal("land-modal"); });
 
@@ -1227,7 +1212,7 @@
     document.querySelectorAll("[data-close]").forEach(btn => {
       btn.addEventListener("click", () => closeModal(btn.dataset.close));
     });
-document.querySelectorAll(".modal").forEach(modal => {
+    document.querySelectorAll(".modal").forEach(modal => {
       modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
     });
 
@@ -1235,8 +1220,9 @@ document.querySelectorAll(".modal").forEach(modal => {
     const googleLinkBtn = el("google-link-btn");
     if (googleLinkBtn) {
       googleLinkBtn.addEventListener("click", () => {
-        // Google ID should already be initialized by Auth.init on page load;
-        // prompt the account chooser to let user select Google account.
+        // If Google ID is already initialized, just prompt the account chooser.
+        // Avoid re-calling Auth.init() which can reset state and cause the
+        // player info modal to keep showing guest data.
         if (window.google && window.google.accounts && window.google.accounts.id) {
           window.google.accounts.id.prompt();
         } else {
@@ -1264,7 +1250,7 @@ el("spin-btn").addEventListener("click", () => {
       el("spin-btn").disabled = true;
       el("wheel-result").textContent = "Spinning...";
 
-Wheel.spin((slice) => {
+      Wheel.spin((slice) => {
         const s = Store.get();
         if (!slice) return;
 
@@ -1279,15 +1265,20 @@ Wheel.spin((slice) => {
           el("wheel-result").textContent = "Your diamond found its way back to you. (◆ +1)";
           showToast("💎 +1 Diamond Refunded!");
 
-          // Launch flying gem to HUD (modal stays open)
-          spawnFlyingGemToHUD(originX, originY);
+          // Auto-close wheel modal & launch flying gem to HUD
+          setTimeout(() => {
+            closeModal("wheel-modal");
+            spawnFlyingGemToHUD(originX, originY);
+          }, 800);
 
         } else if (slice.type === "miss") {
           el("wheel-result").textContent = "Better luck next time! (No reward)";
           showToast("🚫 Nothing this time — keep searching!");
 
-          // Launch flying gem to HUD (modal stays open)
-          spawnFlyingGemToHUD(originX, originY);
+          // Auto-close wheel modal on miss
+          setTimeout(() => {
+            closeModal("wheel-modal");
+          }, 1200);
 
         } else {
           const winAmount = Number(slice.amount) || 0;
@@ -1300,8 +1291,11 @@ Wheel.spin((slice) => {
             Feed.broadcast("jackpot", { amount: winAmount });
           }
 
-          // Launch cascading EB shower (modal stays open)
-          launchFlyingEBStream(originX, originY, winAmount);
+          // Auto-close wheel modal & launch cascading EB shower
+          setTimeout(() => {
+            closeModal("wheel-modal");
+            launchFlyingEBStream(originX, originY, winAmount);
+          }, 850);
         }
 
         Store.save();
