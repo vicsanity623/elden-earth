@@ -334,6 +334,58 @@ html,body{
   min-height:20px; font-weight:700; color:var(--teal); font-size:15px;
 }
 
+/* ---------- Live Balances in Diamond Wheel Modal ---------- */
+.wheel-balance-bar {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin: -6px auto 16px;
+  max-width: 290px;
+}
+
+.wheel-chip {
+  flex: 1;
+  background: var(--panel-2);
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  padding: 6px 10px;
+  text-align: center;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wheel-chip.eb-chip {
+  border-color: rgba(212, 175, 97, 0.4);
+}
+
+.wheel-chip.diamond-chip {
+  border-color: rgba(79, 214, 196, 0.4);
+}
+
+.wheel-chip-label {
+  font-size: 9.5px;
+  color: var(--text-dim);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.wheel-chip-val {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.wheel-chip.eb-chip .wheel-chip-val {
+  color: var(--gold-hi);
+}
+
+.wheel-chip.diamond-chip .wheel-chip-val {
+  color: var(--teal);
+}
+
 /* ---------- Land modal ---------- */
 .land-stats{
   display:flex; gap:12px; margin-bottom:18px;
