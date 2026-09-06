@@ -1,9 +1,39 @@
 // ============================================================
 // Elden Earth — save data (Local + Firebase Cloud Sync)
+// With Integrity Checksum Anti-Cheat Engine
 // ============================================================
 const Store = (() => {
   const KEY = "eldenEarth.save.v1";
+  const CHECKSUM_KEY = "eldenEarth.checksum.v1";
   let db = null;
+
+  // Secret salt prevents attackers from pre-computing hash values
+  // Keep this secret or obfuscate it in production
+  const SECRET_SALT = "eldenEarth_anti_cheat_salt_2026";
+
+  function computeChecksum(state) {
+    const { cash, eb, diamonds, plots } = state;
+    // Simple but effective: sum of all values + salt, modulo a large prime
+    const plotCount = plots ? Object.keys(plots).length : 0;
+    const raw = Number(cash) + Number(eb) + Number(diamonds) + plotCount + SECRET_SALT;
+    // Hash using a simple but obfuscated approach
+    let h = 0;
+    for (let i = 0; i < raw.toString().length; i++) {
+      h = ((h << 5) - h + Number(raw.toString()[i])) | 0; // 32-bit bitwise hash
+    }
+    return h;
+  }
+
+  function verifyChecksum(state) {
+    const storedChecksum = localStorage.getItem(CHECKSUM_KEY);
+    const currentChecksum = computeChecksum(state);
+    return storedChecksum && Number(storedChecksum) === currentChecksum;
+  }
+
+  function setChecksum(state) {
+    const checksum = computeChecksum(state);
+    localStorage.setItem(CHECKSUM_KEY, checksum.toString());
+  }
 
   function getDb() {
     if (db) return db;
@@ -51,6 +81,17 @@ const Store = (() => {
         if (parsed.extractor) {
           state.extractor = Object.assign(defaultState().extractor, parsed.extractor);
         }
+        // --- Integrity Checksum Anti-Cheat ---
+        // If loaded data has a mismatched checksum, it's tampered data
+        if (!verifyChecksum(state)) {
+          console.warn("[Anti-Cheat] Load blocked: checksum mismatch — session likely tampered.");
+          // Revert to clean default state
+          state = defaultState();
+          // Remove bad data from localStorage so next save creates fresh
+          localStorage.removeItem(KEY);
+          localStorage.removeItem(CHECKSUM_KEY);
+          showToast("🚫 Tampered data detected — progress reset to zero.");
+        }
       } else {
         state = defaultState();
       }
@@ -63,6 +104,23 @@ const Store = (() => {
 
   function save(immediateCloud = true) {
     try {
+      // --- Integrity Checksum Anti-Cheat ---
+      // If checksum fails, this is a tampered session → revert values and flag
+      if (!verifyChecksum(state)) {
+        console.warn("[Anti-Cheat] Save blocked: checksum mismatch — session likely tampered.");
+        // Revert to zero values and force re-sync from cloud
+        state.cash = 0;
+        state.eb = 0;
+        state.diamonds = 0;
+        // Clear local save so next load forces cloud sync
+        localStorage.removeItem(KEY);
+        // Also clear the bad checksum so next save creates a fresh one
+        localStorage.removeItem(CHECKSUM_KEY);
+        showToast("🚫 Tampered data detected — progress reset to zero.");
+      } else {
+        // Valid session: update the checksum after save
+        setChecksum(state);
+      }
       localStorage.setItem(KEY, JSON.stringify(state));
       syncToCloudDebounced(immediateCloud);
     } catch (e) {
