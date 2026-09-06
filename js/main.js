@@ -49,6 +49,11 @@
     if (el("stat-eb")) el("stat-eb").textContent = Math.floor(Number(state.eb) || 0) + " EB";
 
     el("stat-diamonds").innerHTML = `${state.diamonds} <span class="hud-gem-icon"></span>`;
+
+    // Update wheel balance display
+    if (el("wheel-diamonds")) el("wheel-diamonds").textContent = Math.floor(Number(state.diamonds) || 0);
+    if (el("wheel-eb")) el("wheel-eb").textContent = Math.floor(Number(state.eb) || 0) + " EB";
+
     el("stat-rate").textContent = "$" + Store.totalRate().toFixed(11) + "/s";
     el("player-name").textContent = state.player.name || "Traveler";
 
