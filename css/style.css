@@ -320,6 +320,16 @@ html,body{
   filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5));
 }
 #wheel-canvas{ max-width:100%; height:auto; }
+.wheel-balance{
+  position:absolute; top:10px; left:10px; z-index:10; display:flex; gap:6px; align-items:center;
+  font-family:var(--font-display); color:var(--gold-hi);
+}
+.wheel-balance .wheel-diamonds{
+  display:flex; align-items:center; gap:2px;
+}
+.wheel-balance .wheel-eb{
+  display:flex; align-items-center; gap:2px;
+}
 .wheel-result{
   min-height:20px; font-weight:700; color:var(--teal); font-size:15px;
 }

@@ -1204,7 +1204,7 @@
       el("spin-btn").disabled = true;
       el("wheel-result").textContent = "Spinning...";
 
-Wheel.spin((slice) => {
+      Wheel.spin((slice) => {
         const s = Store.get();
         if (!slice) return;
 
@@ -1219,15 +1219,20 @@ Wheel.spin((slice) => {
           el("wheel-result").textContent = "Your diamond found its way back to you. (◆ +1)";
           showToast("💎 +1 Diamond Refunded!");
 
-          // Launch flying gem to HUD (modal stays open)
-          spawnFlyingGemToHUD(originX, originY);
+          // Auto-close wheel modal & launch flying gem to HUD
+          setTimeout(() => {
+            closeModal("wheel-modal");
+            spawnFlyingGemToHUD(originX, originY);
+          }, 800);
 
         } else if (slice.type === "miss") {
           el("wheel-result").textContent = "Better luck next time! (No reward)";
           showToast("🚫 Nothing this time — keep searching!");
 
-          // Launch flying gem to HUD (modal stays open)
-          spawnFlyingGemToHUD(originX, originY);
+          // Auto-close wheel modal on miss
+          setTimeout(() => {
+            closeModal("wheel-modal");
+          }, 1200);
 
         } else {
           const winAmount = Number(slice.amount) || 0;
@@ -1240,8 +1245,11 @@ Wheel.spin((slice) => {
             Feed.broadcast("jackpot", { amount: winAmount });
           }
 
-          // Launch cascading EB shower (modal stays open)
-          launchFlyingEBStream(originX, originY, winAmount);
+          // Auto-close wheel modal & launch cascading EB shower
+          setTimeout(() => {
+            closeModal("wheel-modal");
+            launchFlyingEBStream(originX, originY, winAmount);
+          }, 850);
         }
 
         Store.save();
