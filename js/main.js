@@ -48,6 +48,9 @@
     // Elden Bucks game currency in sub-row
     if (el("stat-eb")) el("stat-eb").textContent = Math.floor(Number(state.eb) || 0) + " EB";
 
+    const currentEB = Math.floor(Number(state.eb) || 0);
+    const currentDiamonds = Number(state.diamonds) || 0;
+
     el("stat-diamonds").innerHTML = `${currentDiamonds} <span class="hud-gem-icon"></span>`;
 
     // Live player balances inside the Diamond Wheel modal
