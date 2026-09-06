@@ -1175,6 +1175,7 @@
         spinBtn.disabled = false;
       }
       openModal("wheel-modal");
+      updateTopbar();
     });
     el("land-btn").addEventListener("click", () => { updateLandModal(); openModal("land-modal"); });
 
