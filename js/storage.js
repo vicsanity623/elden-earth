@@ -176,7 +176,7 @@ const Store = (() => {
           // Remove bad data from localStorage so next save creates fresh
           localStorage.removeItem(KEY);
           localStorage.removeItem(CHECKSUM_KEY);
-          showToast("🚫 Tampered data detected — progress reset to zero.");
+console.warn("🚫 Tampered data detected — progress reset to zero.");
         } else {
           // Valid session: run validation & capping, preserve correction state
           // Restore session data from local save
@@ -215,7 +215,7 @@ const Store = (() => {
         localStorage.removeItem(KEY);
         // Also clear the bad checksum so next save creates a fresh one
         localStorage.removeItem(CHECKSUM_KEY);
-        showToast("🚫 Tampered data detected — progress reset to zero.");
+        console.warn("🚫 Tampered data detected — progress reset to zero.");
       } else {
         // Valid session: run full validation & capping, then update checksum
         const { state: validatedState, changed } = validateAndCapState(state);
