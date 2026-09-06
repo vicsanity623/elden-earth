@@ -2667,3 +2667,110 @@ html,body{
 .community-support-card:hover .community-arrow {
   transform: translateX(3px);
 }
+
+/* ================= PHASE 6: COMMUNITY GLOBE HUD & BANNER ================= */
+
+/* Right Edge Globe Button (Positioned under Income Capsule) */
+.globe-hud-btn {
+  position: absolute;
+  top: 130px;
+  right: 14px;
+  z-index: 15;
+  background: rgba(13, 20, 32, 0.92);
+  border: 1.5px solid rgba(79, 214, 196, 0.6);
+  border-radius: 12px;
+  width: 48px;
+  padding: 6px 4px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.7), 0 0 12px rgba(79, 214, 196, 0.35);
+  backdrop-filter: blur(8px);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.globe-hud-btn:active {
+  transform: scale(0.92);
+}
+
+.globe-icon-ring {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.globe-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  filter: drop-shadow(0 0 6px rgba(79, 214, 196, 0.8));
+  animation: globeGlowPulse 3s infinite alternate ease-in-out;
+}
+
+.globe-hud-label {
+  font-family: var(--font-display);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  color: var(--teal);
+}
+
+@keyframes globeGlowPulse {
+  0% { transform: scale(0.96); filter: drop-shadow(0 0 4px rgba(79, 214, 196, 0.6)); }
+  100% { transform: scale(1.04); filter: drop-shadow(0 0 10px rgba(79, 214, 196, 1)); }
+}
+
+/* Return from Outer Space Banner */
+.globe-mode-banner {
+  position: absolute;
+  top: calc(max(14px, env(safe-area-inset-top)) + 8px);
+  left: 16px;
+  right: 16px;
+  z-index: 35;
+  background: rgba(13, 20, 32, 0.95);
+  border: 1.5px solid var(--gold);
+  border-radius: 14px;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.8), 0 0 18px rgba(212, 175, 97, 0.4);
+  backdrop-filter: blur(10px);
+  animation: slideDownBanner 0.4s ease-out;
+}
+
+@keyframes slideDownBanner {
+  0% { transform: translateY(-30px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+.globe-banner-title {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--gold-hi);
+}
+
+.globe-banner-sub {
+  font-size: 10.5px;
+  color: var(--teal);
+  font-weight: 600;
+}
+
+.btn-return-base {
+  width: auto !important;
+  padding: 8px 14px !important;
+  font-size: 12px !important;
+  border-radius: 8px !important;
+  background: linear-gradient(180deg, var(--gold-hi), var(--gold)) !important;
+  color: #1a1204 !important;
+  font-weight: 800 !important;
+  box-shadow: 0 0 12px rgba(212, 175, 97, 0.5) !important;
+  white-space: nowrap;
+}
