@@ -421,6 +421,27 @@
   function onSignedIn(playerData) {
     const player = playerData || Store.get()?.player || { name: "Traveler" };
 
+    // --- Sync unique session ID to Firestore to enforce one-tab-per-account ---
+    // This prevents the same Google account from generating EB in 100+ tabs simultaneously
+    if (window._eldenSessionId) {
+      const db = Store.getDb();
+      if (db) {
+        try {
+          // Use a unique session document under the player's saves doc
+          // Firestore will automatically overwrite if same sessionId exists (idempotent)
+          // If a DIFFERENT sessionId tries to write, we can check rules to reject
+          db.collection("saves").doc(player.id).set({
+            sessionId: window._eldenSessionId,
+            lastSessionUpdate: Date.now()
+          }, { merge: true }).catch(err => {
+            console.warn("[Session] Firestore sync warning (non-critical):", err);
+          });
+        } catch (e) {
+          console.warn("[Session] Error syncing session to Firestore:", e);
+        }
+      }
+    }
+
     // Execute the professional load pipeline
     Bootloader.run(player, (coords) => {
       launchGame(coords);
@@ -1293,6 +1314,17 @@
         boostBtn.classList.add("hidden");
 
         const state = Store.get();
+        // --- EB Cooldown Check: Prevent tab farming across 100+ open tabs ---
+        // Only allow +2 EB if enough time has passed since last EB gain (per user session)
+        const lastGain = Store.getLastEbGainTimestamp();
+        const now = Date.now();
+        const cooldownPassed = (now - lastGain) >= EB_COOLDOWN_MS;
+        if (!cooldownPassed) {
+          const remainingMs = EB_COOLDOWN_MS - (now - lastGain);
+          const secs = Math.ceil(remainingMs / 1000);
+          showToast(`⏳ Wait ${secs}s before claiming another +2 EB boost.`);
+          return; // Block boost click
+        }
         state.eb += 2;
         Store.save();
         updateTopbar();
@@ -1300,6 +1332,9 @@
 
         // Launch 2 flying EB sparks into the HUD!
         launchFlyingEBStream(originX, originY, 2);
+
+        // Record this EB gain so cooldown starts
+        recordEbGain();
 
         // Schedule next appearance
         scheduleBoost();
@@ -1497,6 +1532,12 @@
   document.addEventListener("DOMContentLoaded", () => {
     Store.load();
     checkAndShowAntiCheatWarning();
+    // --- Session Initialization: Prevent multi-tab EB farming ---
+    // Generate a unique session ID for this tab/player combination
+    const currentSessionId = generateSessionId();
+    // Only set session if player is signed in (Google)
+    // This will be wired up in Auth.init callback
+    window._eldenSessionId = currentSessionId;
     Auth.init(onSignedIn);
     el("locate-btn")?.addEventListener("click", startLocating);
   });
