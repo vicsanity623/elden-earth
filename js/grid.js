@@ -34,6 +34,11 @@ const Grid = (() => {
 
   function promptBuyTile(tx, ty) {
     const state = Store.get();
+    if (state.player.id && state.player.id.startsWith("guest-")) {
+      alert("YOU ARE A GUEST IN THIS REALM. Sign in with Google to buy plots.");
+      onBuyAttempt(false, null);
+      return;
+    }
     const tid = tileId(tx, ty);
     const allPlots = getAllPlots();
 
@@ -58,10 +63,16 @@ const Grid = (() => {
     const { tx, ty } = pendingTile;
     pendingTile = null;
 
+    const state = Store.get();
+    if (state.player.id && state.player.id.startsWith("guest-")) {
+      alert("YOU ARE A GUEST IN THIS REALM. Sign in with Google to buy plots.");
+      onBuyAttempt(false, null);
+      return;
+    }
+
     const modal = document.getElementById("buy-modal");
     if (modal) modal.classList.add("hidden");
 
-    const state = Store.get();
     const tid = tileId(tx, ty);
     const allPlots = getAllPlots();
     if (allPlots[tid] || state.eb < CONFIG.PLOT_COST_EB) return;
