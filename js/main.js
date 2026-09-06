@@ -16,6 +16,74 @@
   // Phase 4: Audio toggle state (persisted in localStorage)
   let soundEnabled = localStorage.getItem("eldenEarth.soundEnabled") !== "false";
 
+  // -------------------------------------------------------
+  // Phase 5: Subtle Anti-Cheat Warning System
+  // -------------------------------------------------------
+  // Tracks if game detected and corrected tampered data in this session
+  let antiCheatWarningShown = false;
+
+  function showAntiCheatWarning(message) {
+    // Only show once per session
+    if (antiCheatWarningShown) return;
+    antiCheatWarningShown = true;
+
+    // Create subtle warning banner at top of HUD
+    const topbar = el("topbar");
+    if (!topbar) return;
+
+    const existing = document.getElementById("anti-cheat-warning");
+    if (existing) existing.remove();
+
+    const warnBanner = document.createElement("div");
+    warnBanner.id = "anti-cheat-warning";
+    warnBanner.style = `
+      position: sticky;
+      top: 0;
+      left: 0;
+      right: 0;
+      background: rgba(240, 50, 50, 0.95);
+      color: #fff;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      text-align: center;
+      z-index: 1000;
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid rgba(255,255,255,0.3);
+      animation: slideDown 0.3s ease;
+    `;
+    warnBanner.textContent = message;
+
+    // Add keyframes only once
+    if (!document.getElementById("anti-cheat-style")) {
+      const style = document.createElement("style");
+      style.id = "anti-cheat-style";
+      style.textContent =`
+        @keyframes slideDown {
+          from { top: -100%; opacity: 0; }
+          to { top: 0; opacity: 1; }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    topbar.prepend(warnBanner);
+    // Auto-remove after 5 seconds
+    setTimeout(() => { if (warnBanner.parentElement) warnBanner.remove(); }, 5000);
+  }
+
+  function checkAndShowAntiCheatWarning() {
+    const state = Store.get();
+    // If the loaded state has _corrected flag, show warning
+    if (state && state._corrected && !antiCheatWarningShown) {
+      showAntiCheatWarning("⚡ Game data was corrected — some values reset to fair play.");
+    }
+    // If tampered state (shouldn't normally reach UI, but defense-in-depth)
+    if (state && state._tampered && !antiCheatWarningShown) {
+      showAntiCheatWarning("🚫 Cheat data detected — progress reset to zero.");
+    }
+  }
+
   function setSoundEnabled(enabled) {
     soundEnabled = enabled;
     localStorage.setItem("eldenEarth.soundEnabled", enabled ? "true" : "false");
@@ -1428,6 +1496,7 @@
   // ---------------- Boot ----------------
   document.addEventListener("DOMContentLoaded", () => {
     Store.load();
+    checkAndShowAntiCheatWarning();
     Auth.init(onSignedIn);
     el("locate-btn")?.addEventListener("click", startLocating);
   });
