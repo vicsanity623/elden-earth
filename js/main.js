@@ -10,6 +10,122 @@
 
   const el = (id) => document.getElementById(id);
 
+  // -------------------------------------------------------
+  // Phase 4: Web Audio SFX & Mobile Haptics
+  // -------------------------------------------------------
+  // Phase 4: Audio toggle state (persisted in localStorage)
+  let soundEnabled = localStorage.getItem("eldenEarth.soundEnabled") !== "false";
+
+  function setSoundEnabled(enabled) {
+    soundEnabled = enabled;
+    localStorage.setItem("eldenEarth.soundEnabled", enabled ? "true" : "false");
+  }
+
+  function toggleSound() {
+    const newState = !soundEnabled;
+    setSoundEnabled(newState);
+    return newState;
+  }
+
+  function isSoundEnabled() {
+    return soundEnabled;
+  }
+
+  function playSfx(type) {
+    if (!isSoundEnabled()) return;
+    const ctx = window.AudioContext || window.webkitAudioContext;
+    if (!ctx) return;
+    const context = new ctx();
+
+    const oscillator = context.createOscillator();
+    const gainNode = context.createGain();
+
+    oscillator.connect(gainNode);
+    gainNode.connect(context.destination);
+
+    gainNode.gain.value = 0.3;
+
+    const now = context.currentTime;
+
+    if (type === "crystal") {
+      // Crystal chime: quick decay sine sweep
+      oscillator.frequency.value = 880;
+      oscillator.type = "sine";
+      oscillator.start(now);
+      oscillator.stop(now + 0.5);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+    } else if (type === "click") {
+      // Ticking click: short high-pitch click
+      oscillator.frequency.value = 1200;
+      oscillator.type = "sine";
+      oscillator.start(now);
+      oscillator.stop(now + 0.1);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+    } else if (type === "trumpet") {
+      // Royal trumpet fanfare: multi-note call
+      // Note 1
+      const osc1 = context.createOscillator();
+      const gain1 = context.createGain();
+      osc1.connect(gain1);
+      gain1.connect(context.destination);
+      gain1.gain.value = 0.2;
+      osc1.frequency.value = 523.25; // C5
+      osc1.type = "sine";
+      osc1.start(now);
+      osc1.stop(now + 0.5);
+      gain1.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+
+      // Note 2
+      const osc2 = context.createOscillator();
+      const gain2 = context.createGain();
+      osc2.connect(gain2);
+      gain2.connect(context.destination);
+      gain2.gain.value = 0.2;
+      osc2.frequency.value = 659.25; // E5
+      osc2.type = "sine";
+      osc2.start(now + 0.3);
+      osc2.stop(now + 0.8);
+      gain2.gain.exponentialRampToValueAtTime(0.01, now + 0.8);
+
+      // Note 3
+      const osc3 = context.createOscillator();
+      const gain3 = context.createGain();
+      osc3.connect(gain3);
+      gain3.connect(context.destination);
+      gain3.gain.value = 0.15;
+      osc3.frequency.value = 783.99; // G5
+      osc3.type = "sine";
+      osc3.start(now + 0.6);
+      osc3.stop(now + 1.1);
+      gain3.gain.exponentialRampToValueAtTime(0.01, now + 1.1);
+
+      // Note 4 - finale
+      const osc4 = context.createOscillator();
+      const gain4 = context.createGain();
+      osc4.connect(gain4);
+      gain4.connect(context.destination);
+      gain4.gain.value = 0.15;
+      osc4.frequency.value = 1046.50; // C6
+      osc4.type = "sine";
+      osc4.start(now + 0.9);
+      osc4.stop(now + 1.4);
+      gain4.gain.exponentialRampToValueAtTime(0.01, now + 1.4);
+    }
+  }
+
+  function triggerHaptic(pattern) {
+    if (!navigator.vibrate) return;
+    // If pattern is a number, use it directly; if array, use Web Haptics pattern
+    if (Array.isArray(pattern)) {
+      navigator.vibrate(pattern);
+    } else if (typeof pattern === "number") {
+      navigator.vibrate(pattern);
+    } else {
+      // Default short pulse
+      navigator.vibrate([50, 30, 50]);
+    }
+  }
+
   function showToast(msg, ms = 2200) {
     const t = el("toast");
     t.textContent = msg;
@@ -491,6 +607,8 @@
         onBuyAttempt: (success, rarity) => {
           if (success) {
             showToast(`Claimed a ${rarity.label} plot!`);
+            playSfx("trumpet");
+            triggerHaptic([20, 10, 20]);
             updateTopbar();
             updateLandModal();
           } else {
@@ -501,7 +619,12 @@
       Grid.render();
 
       Diamonds.init(map, {
-        onCollect: () => { updateTopbar(); showToast("Found a diamond! ◆ +1"); },
+        onCollect: () => {
+          updateTopbar();
+          showToast("Found a diamond! ◆ +1");
+          playSfx("crystal");
+          triggerHaptic([50, 30, 50]);
+        },
         onDenied: () => showToast("Too far — walk closer to collect it."),
       });
       Diamonds.setPlayerPosition(currentPos.lat, currentPos.lon);
@@ -1016,6 +1139,10 @@
         showToast(`💎 Collected ${count} Diamond${count > 1 ? "s" : ""} from Extractor!`);
         checkExtractorTick();
 
+        // Phase 4: Crystal chime & haptic on collect
+        playSfx("crystal");
+        triggerHaptic([50, 30, 50]);
+
         // Launch flying diamonds straight into top HUD Diamonds counter!
         launchFlyingGemStream(originX, originY, count);
 
@@ -1200,7 +1327,25 @@
       localStorage.setItem(TUTORIAL_KEY, "true");
       if (menuDot) menuDot.classList.add("hidden");
       openModal("menu-modal");
+      // Sync audio toggle UI
+      const audioToggle = el("audio-toggle");
+      if (audioToggle) audioToggle.checked = isSoundEnabled();
     });
+
+    // Audio toggle change listener
+    const audioToggle = el("audio-toggle");
+    if (audioToggle) {
+      audioToggle.addEventListener("change", () => {
+        const enabled = audioToggle.checked;
+        setSoundEnabled(enabled);
+        // Provide subtle feedback
+        if (!enabled) {
+          showToast("🔇 Sound disabled");
+        } else {
+          showToast("🔊 Sound enabled");
+        }
+      });
+    }
 
     document.querySelectorAll("[data-close]").forEach(btn => {
       btn.addEventListener("click", () => closeModal(btn.dataset.close));
@@ -1227,6 +1372,10 @@
       updateTopbar();
       el("spin-btn").disabled = true;
       el("wheel-result").textContent = "Spinning...";
+
+      // Phase 4: Wheel click sound & haptic
+      playSfx("click");
+      triggerHaptic([100, 50, 100]);
 
       Wheel.spin((slice) => {
         const s = Store.get();
