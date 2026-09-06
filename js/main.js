@@ -48,11 +48,15 @@
     // Elden Bucks game currency in sub-row
     if (el("stat-eb")) el("stat-eb").textContent = Math.floor(Number(state.eb) || 0) + " EB";
 
-    el("stat-diamonds").innerHTML = `${state.diamonds} <span class="hud-gem-icon"></span>`;
+    el("stat-diamonds").innerHTML = `${currentDiamonds} <span class="hud-gem-icon"></span>`;
 
-    // Update wheel balance display
-    if (el("wheel-diamonds")) el("wheel-diamonds").textContent = Math.floor(Number(state.diamonds) || 0);
-    if (el("wheel-eb")) el("wheel-eb").textContent = Math.floor(Number(state.eb) || 0) + " EB";
+    // Live player balances inside the Diamond Wheel modal
+    if (el("wheel-eb-display")) el("wheel-eb-display").textContent = currentEB + " EB";
+    if (el("wheel-diamond-display")) el("wheel-diamond-display").innerHTML = `${currentDiamonds} <span class="hud-gem-icon"></span>`;
+
+    // Update legacy wheel balance spans (backward compatibility)
+    if (el("wheel-diamonds")) el("wheel-diamonds").textContent = currentDiamonds;
+    if (el("wheel-eb")) el("wheel-eb").textContent = currentEB + " EB";
 
     el("stat-rate").textContent = "$" + Store.totalRate().toFixed(11) + "/s";
     el("player-name").textContent = state.player.name || "Traveler";
