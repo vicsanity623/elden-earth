@@ -64,19 +64,20 @@ const Store = (() => {
   function save(immediateCloud = true) {
     try {
       localStorage.setItem(KEY, JSON.stringify(state));
-      
-      // Always sync to cloud immediately - no debounce timer
-      // This ensures progress is captured even if app closes unexpectedly
-      syncToCloud();
+      syncToCloudDebounced(immediateCloud);
     } catch (e) {
       console.warn("Could not save game.", e);
     }
   }
 
+  // Cloud sync debounce - prevents excessive Firestore writes
+  let cloudSyncTimeout = null;
+
   // Force cloud sync before closing/unloading the page
   if (typeof window !== "undefined") {
     window.addEventListener("beforeunload", () => {
       if (state && state.player && state.player.id) {
+        clearTimeout(cloudSyncTimeout);
         syncToCloud();
       }
     });
@@ -95,6 +96,16 @@ const Store = (() => {
     } catch (err) {
       console.warn("[Cloud] Error during sync:", err);
     }
+  }
+
+  // Debounced cloud sync - only syncs once per save call if immediateCloud is not explicitly true
+  function syncToCloudDebounced(immediateCloud = false) {
+    if (immediateCloud) {
+      syncToCloud();
+      return;
+    }
+    clearTimeout(cloudSyncTimeout);
+    cloudSyncTimeout = setTimeout(syncToCloud, 1000);
   }
 
   // Load from Cloud when logging into Google (Full Restore)
