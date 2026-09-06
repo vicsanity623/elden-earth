@@ -328,7 +328,7 @@ html,body{
   display:flex; align-items:center; gap:2px;
 }
 .wheel-balance .wheel-eb{
-  display:flex; align-items-center; gap:2px;
+  display:flex; align-items:center; gap:2px;
 }
 .wheel-result{
   min-height:20px; font-weight:700; color:var(--teal); font-size:15px;
