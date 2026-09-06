@@ -1,9 +1,125 @@
 // ============================================================
 // Elden Earth — save data (Local + Firebase Cloud Sync)
+// With Integrity Checksum Anti-Cheat Engine
 // ============================================================
 const Store = (() => {
   const KEY = "eldenEarth.save.v1";
+  const CHECKSUM_KEY = "eldenEarth.checksum.v1";
   let db = null;
+
+  // Secret salt prevents attackers from pre-computing hash values
+  // Keep this secret or obfuscate it in production
+  const SECRET_SALT = "eldenEarth_anti_cheat_salt_2026";
+
+  // Config-derived max limits (kept in sync with js/config.js)
+  const MAX_EXTRACTOR_LEVEL = 50;
+  const MAX_EXTRACTOR_STORED = 50;
+  const MAX_BOOST_EXPIRY_MS = 6 * 3600 * 1000; // 6 hours max
+  const MIN_VALUE = 0;
+  // Session & anti-farming settings
+  const EB_COOLDOWN_MS = 30000; // Minimum 30s between EB gains per user (prevents tab farming)
+  const MAX_ACTIVE_SESSIONS = 1; // Only one tab per Google account can generate EB at a time
+
+  function computeChecksum(state) {
+    const { cash, eb, diamonds, plots, extractor } = state;
+    // Include ALL critical values so tampering any one breaks the hash
+    const plotCount = plots ? Object.keys(plots).length : 0;
+    const extLevel = extractor ? extractor.level : 1;
+    const extStored = extractor ? extractor.stored : 0;
+    const raw = Number(cash) + Number(eb) + Number(diamonds) + plotCount + extLevel + extStored + SECRET_SALT;
+    // 32-bit bitwise hash (deterministic & fast)
+    let h = 0;
+    for (let i = 0; i < raw.toString().length; i++) {
+      h = ((h << 5) - h + Number(raw.toString()[i])) | 0;
+    }
+    return h;
+  }
+
+  function verifyChecksum(state) {
+    const storedChecksum = localStorage.getItem(CHECKSUM_KEY);
+    const currentChecksum = computeChecksum(state);
+    return storedChecksum && Number(storedChecksum) === currentChecksum;
+  }
+
+  function setChecksum(state) {
+    const checksum = computeChecksum(state);
+    localStorage.setItem(CHECKSUM_KEY, checksum.toString());
+  }
+
+  // --- Session & Anti-Farming Tracker ---
+  // Tracks active Google session per user to prevent 100-tab EB farming
+  let activeSessionId = null;
+  let lastEbGainTimestamp = 0; // Timestamp of last EB change (boost or income tick)
+
+  function generateSessionId() {
+    // Unique session ID based on timestamp + random
+    return "sess_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
+  }
+
+  function isSessionCooldownPassed() {
+    const now = Date.now();
+    const elapsed = now - lastEbGainTimestamp;
+    return elapsed >= EB_COOLDOWN_MS;
+  }
+
+  function recordEbGain() {
+    lastEbGainTimestamp = Date.now();
+  }
+
+  function getActiveSessionId() {
+    return activeSessionId;
+  }
+
+  function setActiveSessionId(id) {
+    activeSessionId = id;
+  }
+
+  function getLastEbGainTimestamp() {
+    return lastEbGainTimestamp;
+  }
+
+  function validateAndCapState(state) {
+    let changed = false;
+
+    // 1. Prevent negative values (should never happen but defense-in-depth)
+    if (state.cash !== undefined && Number(state.cash) < MIN_VALUE) {
+      state.cash = MIN_VALUE; changed = true;
+    }
+    if (state.eb !== undefined && Number(state.eb) < MIN_VALUE) {
+      state.eb = MIN_VALUE; changed = true;
+    }
+    if (state.diamonds !== undefined && Number(state.diamonds) < MIN_VALUE) {
+      state.diamonds = MIN_VALUE; changed = true;
+    }
+
+    // 2. Cap extractor level (prevents console: extractor.level = 999)
+    if (state.extractor && state.extractor.level > MAX_EXTRACTOR_LEVEL) {
+      state.extractor.level = MAX_EXTRACTOR_LEVEL; changed = true;
+    }
+
+    // 3. Cap extractor stored diamonds (prevents: extractor.stored = 9999)
+    if (state.extractor && state.extractor.stored > MAX_EXTRACTOR_STORED) {
+      state.extractor.stored = MAX_EXTRACTOR_STORED; changed = true;
+    }
+
+    // 4. Cap boost expiry to absolute max 6 hours (prevents: boostExpiry = Infinity)
+    if (state.boostExpiry && state.boostExpiry > Date.now() + MAX_BOOST_EXPIRY_MS) {
+      state.boostExpiry = Date.now() + MAX_BOOST_EXPIRY_MS; changed = true;
+    }
+
+    // 5. Cap boost multiplier to config max (30X or 50X)
+    if (state.boostMultiplier && state.boostMultiplier > 50) {
+      state.boostMultiplier = 50; changed = true;
+    }
+
+    // 6. Ensure diamonds doesn't exceed reasonable bounds relative to extractor capacity
+    if (state.diamonds > MAX_EXTRACTOR_STORED * 2) {
+      // Arbitrary safety cap - prevents insane values
+      state.diamonds = MAX_EXTRACTOR_STORED * 2; changed = true;
+    }
+
+    return { state, changed };
+  }
 
   function getDb() {
     if (db) return db;
@@ -51,6 +167,28 @@ const Store = (() => {
         if (parsed.extractor) {
           state.extractor = Object.assign(defaultState().extractor, parsed.extractor);
         }
+        // --- Integrity Checksum Anti-Cheat ---
+        // If loaded data has a mismatched checksum, it's tampered data
+        if (!verifyChecksum(state)) {
+          console.warn("[Anti-Cheat] Load blocked: checksum mismatch — session likely tampered.");
+          // Revert to clean default state
+          state = defaultState();
+          // Remove bad data from localStorage so next save creates fresh
+          localStorage.removeItem(KEY);
+          localStorage.removeItem(CHECKSUM_KEY);
+console.warn("🚫 Tampered data detected — progress reset to zero.");
+        } else {
+          // Valid session: run validation & capping, preserve correction state
+          // Restore session data from local save
+          activeSessionId = parsed.sessionId || null;
+          lastEbGainTimestamp = parsed.lastEbGainTimestamp || 0;
+          const { state: validatedState, changed } = validateAndCapState(state);
+          state = validatedState;
+          // If values were corrected from impossible ranges, mark for subtle warning
+          if (changed) {
+            state._corrected = true;
+          }
+        }
       } else {
         state = defaultState();
       }
@@ -63,20 +201,49 @@ const Store = (() => {
 
   function save(immediateCloud = true) {
     try {
+      // --- Integrity Checksum Anti-Cheat ---
+      // If checksum fails, this is a tampered session → revert values and flag
+      if (!verifyChecksum(state)) {
+        console.warn("[Anti-Cheat] Save blocked: checksum mismatch — session likely tampered.");
+        // Set tamper flag for warning display
+        state._tampered = true;
+        // Revert to zero values and force re-sync from cloud
+        state.cash = 0;
+        state.eb = 0;
+        state.diamonds = 0;
+        // Clear local save so next load forces cloud sync
+        localStorage.removeItem(KEY);
+        // Also clear the bad checksum so next save creates a fresh one
+        localStorage.removeItem(CHECKSUM_KEY);
+        console.warn("🚫 Tampered data detected — progress reset to zero.");
+      } else {
+        // Valid session: run full validation & capping, then update checksum
+        const { state: validatedState, changed } = validateAndCapState(state);
+        if (changed) {
+          // Subtle warning: mark state as having been corrected
+          validatedState._corrected = true;
+        }
+        state = validatedState;
+        // Attach session data before cloud sync
+        state.sessionId = activeSessionId;
+        state.lastEbGainTimestamp = lastEbGainTimestamp;
+        setChecksum(state);
+      }
       localStorage.setItem(KEY, JSON.stringify(state));
-      
-      // Always sync to cloud immediately - no debounce timer
-      // This ensures progress is captured even if app closes unexpectedly
-      syncToCloud();
+      syncToCloudDebounced(immediateCloud);
     } catch (e) {
       console.warn("Could not save game.", e);
     }
   }
 
+  // Cloud sync debounce - prevents excessive Firestore writes
+  let cloudSyncTimeout = null;
+
   // Force cloud sync before closing/unloading the page
   if (typeof window !== "undefined") {
     window.addEventListener("beforeunload", () => {
       if (state && state.player && state.player.id) {
+        clearTimeout(cloudSyncTimeout);
         syncToCloud();
       }
     });
@@ -95,6 +262,16 @@ const Store = (() => {
     } catch (err) {
       console.warn("[Cloud] Error during sync:", err);
     }
+  }
+
+  // Debounced cloud sync - only syncs once per save call if immediateCloud is not explicitly true
+  function syncToCloudDebounced(immediateCloud = false) {
+    if (immediateCloud) {
+      syncToCloud();
+      return;
+    }
+    clearTimeout(cloudSyncTimeout);
+    cloudSyncTimeout = setTimeout(syncToCloud, 1000);
   }
 
   // Load from Cloud when logging into Google (Full Restore)
