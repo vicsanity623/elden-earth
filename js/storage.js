@@ -16,6 +16,9 @@ const Store = (() => {
   const MAX_EXTRACTOR_STORED = 50;
   const MAX_BOOST_EXPIRY_MS = 6 * 3600 * 1000; // 6 hours max
   const MIN_VALUE = 0;
+  // Session & anti-farming settings
+  const EB_COOLDOWN_MS = 30000; // Minimum 30s between EB gains per user (prevents tab farming)
+  const MAX_ACTIVE_SESSIONS = 1; // Only one tab per Google account can generate EB at a time
 
   function computeChecksum(state) {
     const { cash, eb, diamonds, plots, extractor } = state;
@@ -41,6 +44,38 @@ const Store = (() => {
   function setChecksum(state) {
     const checksum = computeChecksum(state);
     localStorage.setItem(CHECKSUM_KEY, checksum.toString());
+  }
+
+  // --- Session & Anti-Farming Tracker ---
+  // Tracks active Google session per user to prevent 100-tab EB farming
+  let activeSessionId = null;
+  let lastEbGainTimestamp = 0; // Timestamp of last EB change (boost or income tick)
+
+  function generateSessionId() {
+    // Unique session ID based on timestamp + random
+    return "sess_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
+  }
+
+  function isSessionCooldownPassed() {
+    const now = Date.now();
+    const elapsed = now - lastEbGainTimestamp;
+    return elapsed >= EB_COOLDOWN_MS;
+  }
+
+  function recordEbGain() {
+    lastEbGainTimestamp = Date.now();
+  }
+
+  function getActiveSessionId() {
+    return activeSessionId;
+  }
+
+  function setActiveSessionId(id) {
+    activeSessionId = id;
+  }
+
+  function getLastEbGainTimestamp() {
+    return lastEbGainTimestamp;
   }
 
   function validateAndCapState(state) {
@@ -144,6 +179,9 @@ const Store = (() => {
           showToast("🚫 Tampered data detected — progress reset to zero.");
         } else {
           // Valid session: run validation & capping, preserve correction state
+          // Restore session data from local save
+          activeSessionId = parsed.sessionId || null;
+          lastEbGainTimestamp = parsed.lastEbGainTimestamp || 0;
           const { state: validatedState, changed } = validateAndCapState(state);
           state = validatedState;
           // If values were corrected from impossible ranges, mark for subtle warning
@@ -186,6 +224,9 @@ const Store = (() => {
           validatedState._corrected = true;
         }
         state = validatedState;
+        // Attach session data before cloud sync
+        state.sessionId = activeSessionId;
+        state.lastEbGainTimestamp = lastEbGainTimestamp;
         setChecksum(state);
       }
       localStorage.setItem(KEY, JSON.stringify(state));
