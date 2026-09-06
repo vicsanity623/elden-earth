@@ -1163,6 +1163,12 @@
         spinBtn.disabled = false;
       }
       openModal("wheel-modal");
+      // Update wheel balance display
+      const state = Store.get();
+      const diamondEl = el("wheel-balance")?.querySelector(".wheel-diamonds");
+      const ebEl = el("wheel-balance")?.querySelector(".wheel-eb");
+      if (diamondEl) diamondEl.innerHTML = `${Number(state.diamonds) || 0} <span class="hud-gem-icon"></span>`;
+      if (ebEl) ebEl.textContent = `${Math.floor(Number(state.eb) || 0)} EB`;
     });
     el("land-btn").addEventListener("click", () => { updateLandModal(); openModal("land-modal"); });
 
