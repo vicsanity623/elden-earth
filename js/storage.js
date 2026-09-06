@@ -11,15 +11,23 @@ const Store = (() => {
   // Keep this secret or obfuscate it in production
   const SECRET_SALT = "eldenEarth_anti_cheat_salt_2026";
 
+  // Config-derived max limits (kept in sync with js/config.js)
+  const MAX_EXTRACTOR_LEVEL = 50;
+  const MAX_EXTRACTOR_STORED = 50;
+  const MAX_BOOST_EXPIRY_MS = 6 * 3600 * 1000; // 6 hours max
+  const MIN_VALUE = 0;
+
   function computeChecksum(state) {
-    const { cash, eb, diamonds, plots } = state;
-    // Simple but effective: sum of all values + salt, modulo a large prime
+    const { cash, eb, diamonds, plots, extractor } = state;
+    // Include ALL critical values so tampering any one breaks the hash
     const plotCount = plots ? Object.keys(plots).length : 0;
-    const raw = Number(cash) + Number(eb) + Number(diamonds) + plotCount + SECRET_SALT;
-    // Hash using a simple but obfuscated approach
+    const extLevel = extractor ? extractor.level : 1;
+    const extStored = extractor ? extractor.stored : 0;
+    const raw = Number(cash) + Number(eb) + Number(diamonds) + plotCount + extLevel + extStored + SECRET_SALT;
+    // 32-bit bitwise hash (deterministic & fast)
     let h = 0;
     for (let i = 0; i < raw.toString().length; i++) {
-      h = ((h << 5) - h + Number(raw.toString()[i])) | 0; // 32-bit bitwise hash
+      h = ((h << 5) - h + Number(raw.toString()[i])) | 0;
     }
     return h;
   }
@@ -33,6 +41,49 @@ const Store = (() => {
   function setChecksum(state) {
     const checksum = computeChecksum(state);
     localStorage.setItem(CHECKSUM_KEY, checksum.toString());
+  }
+
+  function validateAndCapState(state) {
+    let changed = false;
+
+    // 1. Prevent negative values (should never happen but defense-in-depth)
+    if (state.cash !== undefined && Number(state.cash) < MIN_VALUE) {
+      state.cash = MIN_VALUE; changed = true;
+    }
+    if (state.eb !== undefined && Number(state.eb) < MIN_VALUE) {
+      state.eb = MIN_VALUE; changed = true;
+    }
+    if (state.diamonds !== undefined && Number(state.diamonds) < MIN_VALUE) {
+      state.diamonds = MIN_VALUE; changed = true;
+    }
+
+    // 2. Cap extractor level (prevents console: extractor.level = 999)
+    if (state.extractor && state.extractor.level > MAX_EXTRACTOR_LEVEL) {
+      state.extractor.level = MAX_EXTRACTOR_LEVEL; changed = true;
+    }
+
+    // 3. Cap extractor stored diamonds (prevents: extractor.stored = 9999)
+    if (state.extractor && state.extractor.stored > MAX_EXTRACTOR_STORED) {
+      state.extractor.stored = MAX_EXTRACTOR_STORED; changed = true;
+    }
+
+    // 4. Cap boost expiry to absolute max 6 hours (prevents: boostExpiry = Infinity)
+    if (state.boostExpiry && state.boostExpiry > Date.now() + MAX_BOOST_EXPIRY_MS) {
+      state.boostExpiry = Date.now() + MAX_BOOST_EXPIRY_MS; changed = true;
+    }
+
+    // 5. Cap boost multiplier to config max (30X or 50X)
+    if (state.boostMultiplier && state.boostMultiplier > 50) {
+      state.boostMultiplier = 50; changed = true;
+    }
+
+    // 6. Ensure diamonds doesn't exceed reasonable bounds relative to extractor capacity
+    if (state.diamonds > MAX_EXTRACTOR_STORED * 2) {
+      // Arbitrary safety cap - prevents insane values
+      state.diamonds = MAX_EXTRACTOR_STORED * 2; changed = true;
+    }
+
+    return { state, changed };
   }
 
   function getDb() {
@@ -91,6 +142,14 @@ const Store = (() => {
           localStorage.removeItem(KEY);
           localStorage.removeItem(CHECKSUM_KEY);
           showToast("🚫 Tampered data detected — progress reset to zero.");
+        } else {
+          // Valid session: run validation & capping, preserve correction state
+          const { state: validatedState, changed } = validateAndCapState(state);
+          state = validatedState;
+          // If values were corrected from impossible ranges, mark for subtle warning
+          if (changed) {
+            state._corrected = true;
+          }
         }
       } else {
         state = defaultState();
@@ -108,6 +167,8 @@ const Store = (() => {
       // If checksum fails, this is a tampered session → revert values and flag
       if (!verifyChecksum(state)) {
         console.warn("[Anti-Cheat] Save blocked: checksum mismatch — session likely tampered.");
+        // Set tamper flag for warning display
+        state._tampered = true;
         // Revert to zero values and force re-sync from cloud
         state.cash = 0;
         state.eb = 0;
@@ -118,7 +179,13 @@ const Store = (() => {
         localStorage.removeItem(CHECKSUM_KEY);
         showToast("🚫 Tampered data detected — progress reset to zero.");
       } else {
-        // Valid session: update the checksum after save
+        // Valid session: run full validation & capping, then update checksum
+        const { state: validatedState, changed } = validateAndCapState(state);
+        if (changed) {
+          // Subtle warning: mark state as having been corrected
+          validatedState._corrected = true;
+        }
+        state = validatedState;
         setChecksum(state);
       }
       localStorage.setItem(KEY, JSON.stringify(state));
