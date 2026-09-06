@@ -18,12 +18,9 @@ const Auth = (() => {
     const guestBtn = document.getElementById("guest-btn");
     const slot = document.getElementById("g_id_signin_slot");
 
-    // Auto-login immediately if player has already started a save
-    const state = Store.get();
-    if (state && state.player && state.player.id) {
-      onSignedIn(state.player);
-      return;
-    }
+    // Note: We DO NOT auto-login here - we always show the sign-in choice
+    // so Google can merge with any existing guest progress. 
+    // Auto-login happens inside the guest click handler below.
 
     guestBtn.addEventListener("click", () => {
       const s = Store.get();
@@ -63,18 +60,126 @@ const Auth = (() => {
             const playerName = payload.given_name || payload.name || "Traveler";
             const playerAvatar = payload.picture ? "img:" + payload.picture : "🙂";
 
-            // 1. Fetch entire cloud save & plots from Firestore first
+            // Check if there's an existing guest account with local progress
+            const s = Store.get();
+            const hasGuestProgress = s.player && s.player.id && s.player.id.startsWith("guest-");
+
+            // 1. Fetch cloud save first, then merge with local guest progress
             Store.syncFromCloud(googleId).then(() => {
               const s = Store.get();
               s.player.id = googleId;
-              // Only use Google name if the player has NOT chosen a custom name yet
+              
+              // Merge: preserve guest name/avatar if player chose custom values
+              // Only override with Google data if still using defaults
               if (!s.player.name || s.player.name === "Traveler") {
                 s.player.name = playerName;
               }
-              // Only use Google avatar if none selected
               if (!s.player.avatar || s.player.avatar === "🙂") {
                 s.player.avatar = playerAvatar;
               }
+
+              // 3. MERGE STRATEGY: Preserve guest local progress where cloud is empty/default
+              // Preserve locally stored plots if cloud has none for this player
+              if (Object.keys(s.plots || {}).length === 0 && hasGuestProgress) {
+                // Cloud may have no plots; keep any previously loaded guest plots
+                const guestState = localStorage.getItem("eldenEarth.save.v1");
+                if (guestState) {
+                  try {
+                    const guestData = JSON.parse(guestState);
+                    if (guestData && guestData.plots) {
+                      // Only fill in plots cloud doesn't have
+                      Object.keys(guestData.plots).forEach(k => {
+                        if (!s.plots[k]) s.plots[k] = guestData.plots[k];
+                      });
+                    }
+                  } catch (e) {}
+                }
+              }
+
+              // Preserve local liveDiamonds (already handled in syncFromCloud, but ensure it's kept)
+              if (Object.keys(s.liveDiamonds || {}).length === 0 && hasGuestProgress) {
+                const guestState = localStorage.getItem("eldenEarth.save.v1");
+                if (guestState) {
+                  try {
+                    const guestData = JSON.parse(guestState);
+                    if (guestData && guestData.liveDiamonds) {
+                      s.liveDiamonds = guestData.liveDiamonds;
+                    }
+                  } catch (e) {}
+                }
+              }
+
+              // Preserve extractor built state from local guest
+              if (hasGuestProgress) {
+                const guestState = localStorage.getItem("eldenEarth.save.v1");
+                if (guestState) {
+                  try {
+                    const guestData = JSON.parse(guestState);
+                    if (guestData && guestData.extractor) {
+                      // Never un-build an extractor that was already built locally
+                      if (!s.extractor || !s.extractor.built) {
+                        s.extractor = guestData.extractor;
+                      } else {
+                        s.extractor.level = Math.max(s.extractor.level || 1, guestData.extractor.level || 1);
+                        s.extractor.stored = Math.max(s.extractor.stored || 0, guestData.extractor.stored || 0);
+                      }
+                    }
+                  } catch (e) {}
+                }
+              }
+
+              // Preserve cash from local guest if cloud has 0
+              if (hasGuestProgress && (s.cash === 0 || s.cash === undefined)) {
+                const guestState = localStorage.getItem("eldenEarth.save.v1");
+                if (guestState) {
+                  try {
+                    const guestData = JSON.parse(guestState);
+                    if (guestData && guestData.cash !== undefined) {
+                      s.cash = guestData.cash;
+                    }
+                  } catch (e) {}
+                }
+              }
+
+              // Preserve EB from local guest if cloud has 0
+              if (hasGuestProgress && (s.eb === 150 || s.eb === undefined)) {
+                const guestState = localStorage.getItem("eldenEarth.save.v1");
+                if (guestState) {
+                  try {
+                    const guestData = JSON.parse(guestState);
+                    if (guestData && guestData.eb !== undefined) {
+                      s.eb = guestData.eb;
+                    }
+                  } catch (e) {}
+                }
+              }
+
+              // Preserve diamonds count from local guest if cloud has 0
+              if (hasGuestProgress && (s.diamonds === 0 || s.diamonds === undefined)) {
+                const guestState = localStorage.getItem("eldenEarth.save.v1");
+                if (guestState) {
+                  try {
+                    const guestData = JSON.parse(guestState);
+                    if (guestData && guestData.diamonds !== undefined) {
+                      s.diamonds = guestData.diamonds;
+                    }
+                  } catch (e) {}
+                }
+              }
+
+              // Preserve totalDividends from local guest if cloud has 0
+              if (hasGuestProgress && (s.totalDividends === 0 || s.totalDividends === undefined)) {
+                const guestState = localStorage.getItem("eldenEarth.save.v1");
+                if (guestState) {
+                  try {
+                    const guestData = JSON.parse(guestState);
+                    if (guestData && guestData.totalDividends !== undefined) {
+                      s.totalDividends = guestData.totalDividends;
+                    }
+                  } catch (e) {}
+                }
+              }
+
               Store.save();
               // 2. Launch game with fully restored data
               onSignedIn(s.player);
