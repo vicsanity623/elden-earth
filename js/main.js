@@ -240,10 +240,28 @@
   }
 
   function beginWatch() {
+    // Clear any existing watch
+    if (watchId) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+    }
+    
+    // Set up watch with error handling
+    const options = { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 };
+    
     watchId = navigator.geolocation.watchPosition(
       (pos) => handlePosition(pos.coords),
-      (err) => console.warn("watchPosition error", err),
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
+      (err) => {
+        console.warn("watchPosition error", err);
+        // If repeated timeouts, stop watching and inform user
+        if (err.code === 3) { // TIMEOUT
+          console.warn("[Geolocation] Position timeout - stopping watch. Enable location services or go outdoors.");
+          navigator.geolocation.clearWatch(watchId);
+          watchId = null;
+          el("locate-status").textContent = "Location timeout — please enable GPS and try again, or use the map without location tracking.";
+        }
+      },
+      options
     );
   }
 
@@ -1191,9 +1209,24 @@
     document.querySelectorAll("[data-close]").forEach(btn => {
       btn.addEventListener("click", () => closeModal(btn.dataset.close));
     });
-    document.querySelectorAll(".modal").forEach(modal => {
+document.querySelectorAll(".modal").forEach(modal => {
       modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
     });
+
+    // --- Google Account Linking for Guest Players ---
+    const googleLinkBtn = el("google-link-btn");
+    if (googleLinkBtn) {
+      googleLinkBtn.addEventListener("click", () => {
+        // Google ID should already be initialized by Auth.init on page load;
+        // prompt the account chooser to let user select Google account.
+        if (window.google && window.google.accounts && window.google.accounts.id) {
+          window.google.accounts.id.prompt();
+        } else {
+          // Fallback: re-initialize Auth if GSI not yet loaded
+          Auth.init(onSignedIn);
+        }
+      });
+    }
 
     el("spin-btn").addEventListener("click", () => {
       const state = Store.get();
