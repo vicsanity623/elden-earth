@@ -1233,7 +1233,7 @@ Wheel.spin((slice) => {
           const winAmount = Number(slice.amount) || 0;
           s.eb = (Number(s.eb) || 0) + winAmount;
           el("wheel-result").textContent = `🎉 You won ${winAmount} EB!`;
-          showToast(`🎉 Won +${winAmount} Elden Bucks!`;
+          showToast(`🎉 Won +${winAmount} Elden Bucks!`);
 
           // Broadcast 25 EB or 50 EB Jackpots worldwide!
           if (winAmount >= 25 && typeof Feed !== "undefined") {
