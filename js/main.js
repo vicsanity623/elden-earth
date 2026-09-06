@@ -1134,6 +1134,75 @@
     buyLandBtn?.addEventListener("click", enterBuyLandMode);
     exitBuyBtn?.addEventListener("click", exitBuyLandMode);
 
+    // --- Phase 6: 3D Community Globe Mode ---
+    const globeBtn = el("globe-hud-btn");
+    const exitGlobeBtn = el("exit-globe-btn");
+    const globeBanner = el("globe-mode-banner");
+    const topBarEl = el("topbar");
+    let isGlobeMode = false;
+
+    function enterGlobeMode() {
+      if (!map || isGlobeMode) return;
+      isGlobeMode = true;
+
+      globeBanner?.classList.remove("hidden");
+      if (topBarEl) topBarEl.style.display = "none";
+      if (globeBtn) globeBtn.classList.add("hidden");
+
+      // Unlock camera boundaries for free planetary navigation
+      map.setMinZoom(1.0);
+      map.setMaxZoom(20.0);
+      map.dragPan.enable();
+
+      if (map.setProjection) {
+        try { map.setProjection({ type: "globe" }); } catch (e) {}
+      }
+
+      // Smooth 2.5s Space Flight Launch
+      map.flyTo({
+        center: [currentPos ? currentPos.lon : 0, currentPos ? currentPos.lat : 20],
+        zoom: 1.8,
+        pitch: 0,
+        bearing: 0,
+        duration: 2500,
+        essential: true,
+      });
+
+      showToast("🚀 Entering Space: Explore the Realm Globe!");
+    }
+
+    function exitGlobeMode() {
+      if (!map || !currentPos || !isGlobeMode) return;
+      isGlobeMode = false;
+
+      globeBanner?.classList.add("hidden");
+      if (topBarEl) topBarEl.style.display = "flex";
+      if (globeBtn) globeBtn.classList.remove("hidden");
+
+      // Cinematic Swoop from Space to Player Street Level
+      map.flyTo({
+        center: [currentPos.lon, currentPos.lat],
+        zoom: 18.5,
+        pitch: 60,
+        duration: 2400,
+        essential: true,
+      });
+
+      map.once("moveend", () => {
+        map.setMinZoom(15.2);
+        map.setMaxZoom(19.6);
+        map.dragPan.disable(); // Re-lock camera to player
+        if (map.setProjection) {
+          try { map.setProjection({ type: "mercator" }); } catch (e) {}
+        }
+      });
+
+      showToast("🛬 Landed back at base!");
+    }
+
+    globeBtn?.addEventListener("click", enterGlobeMode);
+    exitGlobeBtn?.addEventListener("click", exitGlobeMode);
+
     // Reset Camera to True North & Default Zoom Level
     el("recenter-btn")?.addEventListener("click", () => {
       if (currentPos && map) {
