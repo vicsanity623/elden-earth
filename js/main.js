@@ -129,6 +129,13 @@
     if (editAvatarBtn) editAvatarBtn.style.display = isOtherPlayer ? "none" : "flex";
     if (editNameBtn) editNameBtn.style.display = isOtherPlayer ? "none" : "inline-flex";
 
+    // Hide "Sign in with Google" button for Google-signed-in players; only show for guests
+    const googleLinkSection = el("info-google-link-section");
+    if (googleLinkSection) {
+      const isGooglePlayer = state.player && state.player.id && state.player.id.startsWith("google-");
+      googleLinkSection.style.display = isGooglePlayer ? "none" : "block";
+    }
+
     // Initial Rent Display
     let rentVal = isOtherPlayer ? 0 : (state.cash || 0);
     el("info-total-rent").textContent = "$" + Number(rentVal).toFixed(15);
