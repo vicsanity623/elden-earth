@@ -86,7 +86,7 @@
     <div class="hero-balance-card" id="hero-balance-card">
       <div class="hero-top-line">
         <div class="hero-brand-title">
-          <span class="hero-brand-gem">◆</span> ELDEN EARTH <span class="hero-version-tag">v1.2.1.D111</span>
+          <span class="hero-brand-gem">◆</span> ELDEN EARTH <span class="hero-version-tag">v1.2.1.D112</span>
         </div>
         <div id="boost-timer-badge" class="boost-timer-badge hidden">⚡ 30X BOOST <span id="boost-countdown">00:00:00</span></div>
       </div>
@@ -212,10 +212,21 @@
     <button class="close-btn" data-close="wheel-modal">✕</button>
     <h2>Diamond Wheel</h2>
     <p class="modal-sub">2 <span class="hud-gem-icon"></span> per spin</p>
-    <div class="wheel-balance">
-      <span class="wheel-diamonds"></span>
-      <span class="wheel-eb"></span>
+
+
+    <!-- Live Player Balances Inside Wheel -->
+    <div class="wheel-balance-bar">
+      <div class="wheel-chip eb-chip">
+        <span class="wheel-chip-label">Elden Bucks</span>
+        <strong id="wheel-eb-display" class="wheel-chip-val">0 EB</strong>
+      </div>
+      <div class="wheel-chip diamond-chip">
+        <span class="wheel-chip-label">Diamonds</span>
+        <strong id="wheel-diamond-display" class="wheel-chip-val">0 <span class="hud-gem-icon"></span></strong>
+      </div>
     </div>
+
+
     <div class="wheel-wrap">
       <div class="wheel-pointer">▼</div>
       <canvas id="wheel-canvas" width="320" height="320"></canvas>
