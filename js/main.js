@@ -48,7 +48,19 @@
     // Elden Bucks game currency in sub-row
     if (el("stat-eb")) el("stat-eb").textContent = Math.floor(Number(state.eb) || 0) + " EB";
 
-    el("stat-diamonds").innerHTML = `${state.diamonds} <span class="hud-gem-icon"></span>`;
+    const currentEB = Math.floor(Number(state.eb) || 0);
+    const currentDiamonds = Number(state.diamonds) || 0;
+
+    el("stat-diamonds").innerHTML = `${currentDiamonds} <span class="hud-gem-icon"></span>`;
+
+    // Live player balances inside the Diamond Wheel modal
+    if (el("wheel-eb-display")) el("wheel-eb-display").textContent = currentEB + " EB";
+    if (el("wheel-diamond-display")) el("wheel-diamond-display").innerHTML = `${currentDiamonds} <span class="hud-gem-icon"></span>`;
+
+    // Update legacy wheel balance spans (backward compatibility)
+    if (el("wheel-diamonds")) el("wheel-diamonds").textContent = currentDiamonds;
+    if (el("wheel-eb")) el("wheel-eb").textContent = currentEB + " EB";
+
     el("stat-rate").textContent = "$" + Store.totalRate().toFixed(11) + "/s";
     el("player-name").textContent = state.player.name || "Traveler";
 
@@ -128,6 +140,13 @@
     const editNameBtn = el("edit-name-btn");
     if (editAvatarBtn) editAvatarBtn.style.display = isOtherPlayer ? "none" : "flex";
     if (editNameBtn) editNameBtn.style.display = isOtherPlayer ? "none" : "inline-flex";
+
+    // Hide "Sign in with Google" button for Google-signed-in players; only show for guests
+    const googleLinkSection = el("info-google-link-section");
+    if (googleLinkSection) {
+      const isGooglePlayer = state.player && state.player.id && state.player.id.startsWith("google-");
+      googleLinkSection.style.display = isGooglePlayer ? "none" : "block";
+    }
 
     // Initial Rent Display
     let rentVal = isOtherPlayer ? 0 : (state.cash || 0);
@@ -1163,6 +1182,7 @@
         spinBtn.disabled = false;
       }
       openModal("wheel-modal");
+      updateTopbar();
     });
     el("land-btn").addEventListener("click", () => { updateLandModal(); openModal("land-modal"); });
 
@@ -1218,21 +1238,11 @@
           s.diamonds = (Number(s.diamonds) || 0) + 1;
           el("wheel-result").textContent = "Your diamond found its way back to you. (◆ +1)";
           showToast("💎 +1 Diamond Refunded!");
-
-          // Auto-close wheel modal & launch flying gem to HUD
-          setTimeout(() => {
-            closeModal("wheel-modal");
-            spawnFlyingGemToHUD(originX, originY);
-          }, 800);
+          spawnFlyingGemToHUD(originX, originY);
 
         } else if (slice.type === "miss") {
           el("wheel-result").textContent = "Better luck next time! (No reward)";
           showToast("🚫 Nothing this time — keep searching!");
-
-          // Auto-close wheel modal on miss
-          setTimeout(() => {
-            closeModal("wheel-modal");
-          }, 1200);
 
         } else {
           const winAmount = Number(slice.amount) || 0;
@@ -1245,11 +1255,7 @@
             Feed.broadcast("jackpot", { amount: winAmount });
           }
 
-          // Auto-close wheel modal & launch cascading EB shower
-          setTimeout(() => {
-            closeModal("wheel-modal");
-            launchFlyingEBStream(originX, originY, winAmount);
-          }, 850);
+          launchFlyingEBStream(originX, originY, winAmount);
         }
 
         Store.save();
