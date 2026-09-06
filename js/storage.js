@@ -61,24 +61,13 @@ const Store = (() => {
     return state;
   }
 
-  let cloudSyncTimer = null;
-
-  function save(immediateCloud = false) {
+  function save(immediateCloud = true) {
     try {
       localStorage.setItem(KEY, JSON.stringify(state));
       
-      if (immediateCloud) {
-        clearTimeout(cloudSyncTimer);
-        syncToCloud();
-      } else {
-        // Debounce cloud sync to once every 25 seconds during passive idle ticking
-        if (!cloudSyncTimer) {
-          cloudSyncTimer = setTimeout(() => {
-            syncToCloud();
-            cloudSyncTimer = null;
-          }, 25000);
-        }
-      }
+      // Always sync to cloud immediately - no debounce timer
+      // This ensures progress is captured even if app closes unexpectedly
+      syncToCloud();
     } catch (e) {
       console.warn("Could not save game.", e);
     }
