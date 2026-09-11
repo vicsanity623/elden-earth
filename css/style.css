@@ -26,60 +26,11 @@
   /* Text */
   --text-primary: #f0ede8;
   --text-secondary: #8a8799;
-  --text-muted: #4a4859;
-
-  /* Accent */
-  --red: #850f1c;
-  --red-dim: #3d0f15;
-  --red-glow: rgba(213, 0, 0, 1);
-  --teal: #4ecdc4;
-  --teal-dim: rgba(78, 205, 196, 0.15);
-
-  /* Player */
-  --player-h: 88px;
-  --player-h-mob: 68px;
-  --sidebar-w: 240px;
-  --mobile-nav-h: 64px;
-
-  /* Misc */
-  --radius: 10px;
-  --radius-lg: 16px;
-  --radius-pill: 999px;
-  --shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
-  --shadow-lg: 0 16px 64px rgba(0, 0, 0, 0.8);
-
-  /* Fonts */
-  --font-display: 'Syne', sans-serif;
-  --font-body: 'DM Sans', sans-serif;
+  --text-mut
 
   /* Transitions */
   --t: 0.2s ease;
   --t-slow: 0.4s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-html {
-  height: 100%;
-  font-size: 15px;
-}
-
-body {
-  height: 100%;
-  font-family: var(--font-body);
-  background: var(--bg-deep);
-  color: var(--text-primary);
-  display: grid;
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
-  grid-template-rows: 1fr var(--player-h);
-  grid-template-areas:
-    "sidebar main"
-    "player  player";
-  overflow: hidden;
-  -webkit-font-smoothing: antialiased;
-}
-
-/* ── Scrollbar ─────────────────────────────────────────────── */
-::-webkit-scrollbar {
-  width: 4px;
 }
 
 ::-webkit-scrollbar-track {
