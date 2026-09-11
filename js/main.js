@@ -38,26 +38,32 @@
     navigator.serviceWorker.getRegistration().then((registration) => {
       if (!registration) return;
 
-      registration.installing?.onstatechange = () => {
-        if (installing.state === 'installed') {
-          // New SW installed - check if it's a new version
-          const newVersion = installing.scriptURL;
-          if (newVersion && window.eldenEarthLastVersion !== newVersion) {
-            window.eldenEarthLastVersion = newVersion;
-            showToast("🆕 Game update detected! Reloading to apply...", 8000);
-            // Reload after a delay so player can see the message
-            setTimeout(() => window.location.reload(), 3000);
+      const installing = registration.installing;
+      if (installing) {
+        installing.onstatechange = () => {
+          if (installing.state === 'installed') {
+            // New SW installed - check if it's a new version
+            const newVersion = installing.scriptURL;
+            if (newVersion && window.eldenEarthLastVersion !== newVersion) {
+              window.eldenEarthLastVersion = newVersion;
+              showToast("🆕 Game update detected! Reloading to apply...", 8000);
+              // Reload after a delay so player can see the message
+              setTimeout(() => window.location.reload(), 3000);
+            }
           }
-        }
-      };
+        };
+      }
 
       // Also check waiting SW
-      registration.waiting?.onstatechange = () => {
-        if (registration.waiting.state === 'installed') {
-          showToast("🆕 Game update ready! Reloading to apply...", 8000);
-          setTimeout(() => window.location.reload(), 3000);
-        }
-      };
+      const waiting = registration.waiting;
+      if (waiting) {
+        waiting.onstatechange = () => {
+          if (waiting.state === 'installed') {
+            showToast("🆕 Game update ready! Reloading to apply...", 8000);
+            setTimeout(() => window.location.reload(), 3000);
+          }
+        };
+      }
     });
   }
 
