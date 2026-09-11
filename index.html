@@ -2,96 +2,21 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>BrainSim — Live Evolved Agent Evade github 60 day inactivity</title>
-<meta name="description" content="Live visualization of an evolutionarily trained CTRNN neural network agent navigating a 2D world."/>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet"/>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{
-  --bg:#050508;--surface:rgba(255,255,255,0.04);--border:rgba(255,255,255,0.08);
-  --accent:#00e5ff;--green:#00ff88;--red:#ff3366;--amber:#ffb300;--purple:#c084fc;
-  --text:#e2e8f0;--muted:#64748b;
-}
-body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh;overflow-x:hidden}
-/* animated bg */
-body::before{content:'';position:fixed;inset:0;
-  background:radial-gradient(ellipse 80% 60% at 20% 20%,rgba(0,229,255,0.06) 0%,transparent 60%),
-             radial-gradient(ellipse 60% 80% at 80% 80%,rgba(192,132,252,0.06) 0%,transparent 60%);
-  pointer-events:none;z-index:0}
-
-header{position:relative;z-index:1;text-align:center;padding:28px 20px 12px}
-header h1{font-size:clamp(1.4rem,4vw,2.2rem);font-weight:700;letter-spacing:0.05em;
-  background:linear-gradient(90deg,var(--accent),var(--purple));
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-header p{color:var(--muted);font-size:.85rem;margin-top:4px}
-
-.main{position:relative;z-index:1;display:flex;flex-wrap:wrap;gap:16px;
-  padding:0 16px 24px;max-width:1100px;margin:0 auto;align-items:flex-start}
-
-/* stat panel */
-.panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;
-  padding:16px;backdrop-filter:blur(12px);flex:0 0 220px}
-.panel h2{font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+g:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
 .stat{display:flex;justify-content:space-between;align-items:center;
   padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem}
 .stat:last-child{border-bottom:none}
 .stat-label{color:var(--muted)}
 .stat-val{font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--accent)}
 .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:.7rem;font-weight:600;margin-top:10px}
-.badge.live{background:rgba(0,255,136,.15);color:var(--green);border:1px solid rgba(0,255,136,.3)}
-.badge.loading{background:rgba(255,179,0,.15);color:var(--amber);border:1px solid rgba(255,179,0,.3)}
-
-/* canvas wrapper */
-.canvas-wrap{flex:1;min-width:300px}
-#world{display:block;width:100%;border-radius:14px;border:1px solid var(--border);
-  background:#080810;image-rendering:pixelated}
-
-/* health bar */
-.hbar-wrap{margin-top:10px;background:rgba(255,255,255,.06);border-radius:6px;height:8px;overflow:hidden}
-.hbar{height:100%;border-radius:6px;transition:width .3s,background .3s}
-
-/* bottom row */
-.info-row{position:relative;z-index:1;display:flex;flex-wrap:wrap;gap:10px;
-  padding:0 16px 32px;max-width:1100px;margin:0 auto}
-.chip{background:var(--surface);border:1px solid var(--border);border-radius:8px;
-  padding:6px 14px;font-size:.78rem;color:var(--muted);font-family:'JetBrains Mono',monospace}
-.chip span{color:var(--text)}
-
-button#resetBtn{margin-left:auto;background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.3);
-  color:var(--accent);border-radius:8px;padding:6px 16px;font-size:.8rem;cursor:pointer;
-  font-family:'Inter',sans-serif;transition:background .2s}
-button#resetBtn:hover{background:rgba(0,229,255,.2)}
-
-footer{text-align:center;padding-bottom:24px;color:var(--muted);font-size:.75rem;position:relative;z-index:1}
-footer a{color:var(--accent);text-decoration:none}
-</style>
-</head>
+.badge.
 <body>
 <header>
   <h1>🧠 BRAINSIM — LIVE EVOLVED AGENT</h1>
   <p>Continuous CTRNN neural network, evolved via GitHub Actions · Auto-refreshes every 60 s</p>
 </header>
 
-<div class="main">
-  <div class="panel">
-    <h2>Brain Stats</h2>
-    <div class="stat"><span class="stat-label">Generation</span><span class="stat-val" id="sGen">—</span></div>
-    <div class="stat"><span class="stat-label">Best Score</span><span class="stat-val" id="sScore">—</span></div>
-    <div class="stat"><span class="stat-label">Top Food</span><span class="stat-val" id="sFood">—</span></div>
-    <div class="stat"><span class="stat-label">Max HP</span><span class="stat-val" id="sHP">—</span></div>
-    <div class="stat"><span class="stat-label">Brain Size</span><span class="stat-val" id="sBrainSz">—</span></div>
-    <div class="stat"><span class="stat-label">Health</span><span class="stat-val" id="sHealth">—</span></div>
-    <div class="stat"><span class="stat-label">Food Eaten</span><span class="stat-val" id="sEaten">—</span></div>
-    <div class="stat"><span class="stat-label">Senses</span><span class="stat-val" id="sSenses">—</span></div>
-    <br/>
-    <span class="badge loading" id="statusBadge">Loading…</span>
-    <br/><br/>
-    <div style="font-size:.7rem;color:var(--muted)" id="lastTrained">—</div>
-  </div>
-
-  <div class="canvas-wrap">
+<div class="mp">
     <canvas id="world" width="600" height="600"></canvas>
     <div class="hbar-wrap"><div class="hbar" id="hbar" style="width:100%;background:var(--green)"></div></div>
   </div>
@@ -101,55 +26,7 @@ footer a{color:var(--accent);text-decoration:none}
   <div class="chip">Tick <span id="cTick">0</span></div>
   <div class="chip">FPS <span id="cFps">—</span></div>
   <div class="chip">Mode <span id="cMode">Fast</span></div>
-  <div class="chip">Predator <span id="cPred">—</span></div>
-  <button id="resetBtn">↺ Reset Agent</button>
-</div>
-
-<footer>
-  <a href="https://github.com/vicsanity623/brainSim" target="_blank">github.com/vicsanity623/brainSim</a>
-  &nbsp;·&nbsp; Evolved continuously on GitHub Actions &nbsp;·&nbsp; CTRNN + DeepSeek-style sparse attention
-</footer>
-
-<script>
-// ─── Constants (must match Python) ───────────────────────────────────────────
-const BRAIN_SIZE      = 100;
-const MEMORY_SIZE     = 32;
-const ATTENTION_WIN   = 16;
-const BRAIN_TICK_EVERY= 3;
-const WORLD_SIZE      = 50;
-
-// ─── CTRNN ───────────────────────────────────────────────────────────────────
-class CTRNN {
-  constructor(data) {
-    this.size          = data.size || BRAIN_SIZE;
-    this.weights       = data.weights;       // 2D array [size][size]
-    this.biases        = data.biases;        // 1D array
-    this.tauArr        = data.time_constants;
-    this.compressW     = data.compress_weights;  // [MEMORY_SIZE][19]
-    this.attnW         = data.attention_weights; // [size][ATTN_WIN]
-    this.voltages      = new Float64Array(this.size);
-    this.adaptation    = new Float64Array(this.size);
-    this.ltmTrace      = new Float64Array(data.ltm_trace);
-    this.compMem       = new Float64Array(data.compressed_memory);
-    this.lastOutputs   = new Float64Array(this.size).fill(0.5);
-    this.voltHistory   = [];
-    this.thinkingMode  = 0;
-    this._batchedNetIn = null;
-  }
-
-  sigmoid(x){ return 1/(1+Math.exp(-Math.max(-50,Math.min(50,x)))) }
-
-  getOutputs(uncertainty=null){
-    if(uncertainty!==null) this.thinkingMode = uncertainty>0.7 ? 1 : 0;
-    const out = new Float64Array(this.size);
-    for(let n=0;n<this.size;n++){
-      const v = Math.max(-50,Math.min(50, this.voltages[n]-this.adaptation[n]*1.5));
-      out[n] = this.sigmoid(v);
-    }
-    return out;
-  }
-
-  compressSensors(sensors){
+  <div clze ||
     const c = new Float64Array(MEMORY_SIZE);
     for(let m=0;m<MEMORY_SIZE;m++){
       let s=0; for(let j=0;j<19;j++) s+=this.compressW[m][j]*sensors[j];
@@ -187,72 +64,12 @@ class CTRNN {
     if(this.voltHistory.length>ATTENTION_WIN*2) this.voltHistory.shift();
     this.lastOutputs = outputs;
     return outputs;
-  }
-}
-
-// ─── Environment ─────────────────────────────────────────────────────────────
-class Env {
-  constructor(gen, maxHealth){
-    this.gen=gen; this.maxHealth=maxHealth;
-    this.agentPos=[25,25];
-    this.foodPos=Array.from({length:10},()=>[rand(7.5,42.5),rand(7.5,42.5)]);
-    this.poisonPos=Array.from({length:3},()=>[rand(7.5,42.5),rand(7.5,42.5)]);
-    this.poisonVels=Array.from({length:3},()=>[randS(.15),randS(.15)]);
-    this.enemyPos=[2.5,2.5];
-    this.health=maxHealth; this.foodCount=0; this.ticks=0;
-    this.wallContacts=0; this.foodVisible=true;
-    this.predatorActive=(gen>=500);
-    this.lastFoodTime=0;
-  }
-  getSensors(){
-    this.foodVisible=(this.ticks%300)<240;
-    const nd=(t)=>{const dx=t[0]-this.agentPos[0],dy=t[1]-this.agentPos[1],d=Math.sqrt(dx*dx+dy*dy)+.001;return[[dx/d,dy/d],d]};
-    let foodS,foodD;
-    if(this.foodVisible){
-      let best=Infinity,bi=0;
-      this.foodPos.forEach(([fx,fy],i)=>{const d=(fx-this.agentPos[0])**2+(fy-this.agentPos[1])**2;if(d<best){best=d;bi=i}});
-      [foodS,foodD]=nd(this.foodPos[bi]);
-    }else{foodS=[0,0];foodD=50}
-    let pBest=Infinity,pi2=0;
-    this.poisonPos.forEach(([px,py],i)=>{const d=(px-this.agentPos[0])**2+(py-this.agentPos[1])**2;if(d<pBest){pBest=d;pi2=i}});
-    const[poisS,poisD]=nd(this.poisonPos[pi2]);
-    const[centerS,centerD]=nd([25,25]);
-    const fProx=Math.max(0,1-foodD/50), pProx=Math.max(0,1-poisD/50), cProx=Math.max(0,1-centerD/50);
-    const[ax,ay]=this.agentPos;
-    const wL=ax<10?(10-ax)/10:0, wR=ax>40?(ax-40)/10:0, wT=ay<10?(10-ay)/10:0, wB=ay>40?(ay-40)/10:0;
+  }?(ax-40)/10:0, wT=ay<10?(10-ay)/10:0, wB=ay>40?(ay-40)/10:0;
     const pain=(ax<=.5||ax>=49.5||ay<=.5||ay>=49.5)?1:0;
     const hunger=(100-this.health)/100;
     const osc=Math.sin(this.ticks*.2);
     let enemS=[0,0],eProx=0;
-    if(this.predatorActive){const[es,ed]=nd(this.enemyPos);enemS=es;eProx=Math.max(0,1-ed/50)}
-    return[foodS[0],foodS[1],poisS[0],poisS[1],wL,wR,wT,wB,hunger,osc,enemS[0],enemS[1],pain,fProx,pProx,centerS[0],centerS[1],cProx,eProx];
-  }
-  update(motor){
-    this.ticks++;
-    const dx=(motor[0]-.5)*1.4, dy=(motor[1]-.5)*1.4;
-    let[nx,ny]=[this.agentPos[0]+dx,this.agentPos[1]+dy];
-    const hitWall=(nx<=0||nx>=50||ny<=0||ny>=50);
-    if(hitWall){this.wallContacts++;nx=Math.max(2,Math.min(48,nx));ny=Math.max(2,Math.min(48,ny))}
-    this.agentPos=[Math.max(0,Math.min(50,nx)),Math.max(0,Math.min(50,ny))];
-    if(this.predatorActive){
-      const[ex,ey]=this.enemyPos,[ax,ay]=this.agentPos;
-      const d=Math.sqrt((ax-ex)**2+(ay-ey)**2)+.01;
-      this.enemyPos=[ex+(ax-ex)/d*.325,ey+(ay-ey)/d*.325];
-    }
-    this.health-=(hitWall?1.5:.008);
-    this.foodPos.forEach(([fx,fy],i)=>{
-      if((fx-this.agentPos[0])**2+(fy-this.agentPos[1])**2<6.25){
-        this.health=Math.min(100,this.health+45);this.foodCount++;this.lastFoodTime=this.ticks;
-        this.foodPos[i]=[rand(7.5,42.5),rand(7.5,42.5)];
-      }
-    });
-    this.poisonPos.forEach(([px,py],i)=>{
-      this.poisonPos[i][0]+=this.poisonVels[i][0]; this.poisonPos[i][1]+=this.poisonVels[i][1];
-      if(this.poisonPos[i][0]<0||this.poisonPos[i][0]>50) this.poisonVels[i][0]*=-1;
-      if(this.poisonPos[i][1]<0||this.poisonPos[i][1]>50) this.poisonVels[i][1]*=-1;
-      if((this.poisonPos[i][0]-this.agentPos[0])**2+(this.poisonPos[i][1]-this.agentPos[1])**2<4){
-        this.health-=70; this.poisonPos[i]=[rand(7.5,42.5),rand(7.5,42.5)];
-      }
+    if(t
     });
     const predDead=this.predatorActive&&(this.enemyPos[0]-this.agentPos[0])**2+(this.enemyPos[1]-this.agentPos[1])**2<4;
     return this.health>0&&!predDead;
@@ -272,26 +89,7 @@ async function loadBrain(){
   try{
     const r=await fetch('brain.json?_='+Date.now());
     if(!r.ok) throw new Error('brain.json not found');
-    const d=await r.json();
-    meta=d.meta;
-    brain=new CTRNN(d);
-    resetEnv();
-    document.getElementById('sGen').textContent=meta.generation.toLocaleString();
-    document.getElementById('sScore').textContent=fmtScore(meta.score);
-    document.getElementById('sFood').textContent=meta.food;
-    document.getElementById('sHP').textContent=meta.max_health;
-    document.getElementById('sBrainSz').textContent=meta.brain_size+'n';
-    document.getElementById('lastTrained').textContent='Trained: '+meta.exported_at.replace('T',' ').replace('Z',' UTC');
-    document.getElementById('statusBadge').textContent='● LIVE';
-    document.getElementById('statusBadge').className='badge live';
-  }catch(e){
-    document.getElementById('statusBadge').textContent='⚠ '+e.message;
-    console.error(e);
-  }
-}
-
-function resetEnv(){
-  env=new Env(meta?meta.generation:1, meta?meta.max_health:150);
+    const d=await r.generation:1, meta?meta.max_health:150);
   simTick=0;
 }
 
