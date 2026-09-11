@@ -1,5 +1,5 @@
 // Bump this version string whenever you deploy an update!
-const CACHE_NAME = 'elden-earth-v1.3.7';
+const CACHE_NAME = 'elden-earth-v0.0.1';
 
 const ASSETS_TO_CACHE = [
     './',
@@ -22,7 +22,10 @@ const ASSETS_TO_CACHE = [
     './js/geo.js',
     './js/feed.js',
     './js/config.js',
-    './js/character.js'
+    './js/character.js',
+    './js/citadels.js',
+    './js/chat.js',
+    './js/pool.js'
 ];
 
 // 1. Force Immediate Installation
@@ -53,7 +56,14 @@ self.addEventListener('activate', (e) => {
     );
 });
 
-// 3. Network-First Strategy (Always fetch fresh code first, cache fallback if offline)
+// 3. NEW: Send message to all clients when a new SW activates
+self.addEventListener('message', (e) => {
+    if (e.data && e.data.type === 'SKIP_WAITING') {
+        self.skipWaiting();
+    }
+});
+
+// 4. Network-First Strategy (Always fetch fresh code first, cache fallback if offline)
 self.addEventListener('fetch', (e) => {
     if (e.request.method !== 'GET') return;
 
@@ -77,3 +87,16 @@ self.addEventListener('fetch', (e) => {
             })
     );
 });
+
+// 5. NEW: On install/activate, notify all open tabs that an update is waiting
+const versionCheck = setInterval(() => {
+    clients.matchAll({includeUncontrolled: true}).then((clients) => {
+        if (typeof window.eldenEarthLastVersion === 'undefined') return;
+        clients.forEach((client) => {
+            client.postMessage({
+                type: 'SW_UPDATE_AVAILABLE',
+                version: CACHE_NAME
+            });
+        });
+    });
+}, 60000); // check every minute
