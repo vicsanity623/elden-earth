@@ -1,1692 +1,1281 @@
-// ============================================================
-// Elden Earth — main
-// Wires sign-in -> location permission -> map -> game loop.
-// Supports automatic service worker update detection & reload.
-// ============================================================
-(() => {
-  let map, watchId;
-  let currentPos = null;
-  let toastTimer = null;
-  let pulseAnimId = null;
-  let isOrbiting = false;
-  let isUserInteracting = false;
+import { loadAssets, images } from './engine/assets.js';
+import { Input } from './engine/input.js';
+import { Camera } from './engine/camera.js';
+import { World, TILE, BIOME } from './world/worldgen.js';
+import { Player } from './entities/player.js';
+import { NPC } from './entities/npc.js';
+import { Spawner } from './systems/spawner.js';
+import { GameClock } from './systems/time.js';
+import { Survival } from './systems/survival.js';
+import { Inventory } from './systems/inventory.js';
+import { QuestSystem } from './systems/questsystem.js';
+import { rollPlayerDamage, inRange, ATTACK_RANGE, ATTACK_COOLDOWN, PLAYER_ATTACK_STAMINA_COST } from './systems/combat.js';
+import { rollLootTable, ITEMS, RARITY } from './data/items.js';
+import { MAIN_NPC, SIDE_NPC } from './data/quests.js';
+import { saveGame, loadGame, hasSave, clearSave } from './systems/save.js';
+import { updateHUD, showToast, spawnFloatText } from './ui/hud.js';
+import { showDialogue, showReminder, showSystemMessage, showLoot, showItemDetail, openModal, closeModal, anyModalOpen } from './ui/modal.js';
 
-  const el = (id) => document.getElementById(id);
+const TILE_IMG = {
+  [BIOME.GRASS]: ['tile_grass.png', 'tile_grass2.png'],
+  [BIOME.FOREST]: ['tile_grass2.png', 'tile_grass.png'],
+  [BIOME.SAND]: ['tile_sand.png'],
+  [BIOME.WATER]: ['tile_water.png'],
+  [BIOME.STONE]: ['tile_stone.png', 'tile_cave.png'],
+  [BIOME.CAVE]: ['tile_cave.png'],
+};
 
-  // Track last known SW version for update detection
-  const SW_UPDATE_CHECK_INTERVAL = 60000; // check every 60 seconds
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const camera = new Camera();
 
-  function showToast(msg, ms = 2200) {
-    const t = el("toast");
-    t.textContent = msg;
-    t.classList.remove("hidden");
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.add("hidden"), ms);
+let dpr = Math.min(window.devicePixelRatio || 1, 2);
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  canvas.width = Math.floor(w * dpr);
+  canvas.height = Math.floor(h * dpr);
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  camera.viewW = w; camera.viewH = h;
+}
+window.addEventListener('resize', resize);
+resize();
+
+let input = null;
+let state = null;
+let running = false;
+let lastTime = 0;
+let saveTimer = 0;
+let saveNeeded = false;
+
+function requestSave() { saveNeeded = true; }
+
+const SPAWN_POS = { x: 0, y: 0 };
+const MAIN_NPC_POS = { x: 0, y: -60 };
+const SIDE_NPC_POS = { x: 15200, y: -9600 };
+
+function newGameState(seed) {
+  const world = new World(seed);
+  const spawner = new Spawner(world, seed);
+  const player = new Player(SPAWN_POS.x, SPAWN_POS.y + 10);
+  const clock = new GameClock(6);
+  const survival = new Survival();
+  const inventory = new Inventory();
+  inventory.add('sword_common', 1);
+  inventory.add('potion_health', 2);
+  inventory.add('water_flask', 2);
+  inventory.add('bread', 2);
+  inventory.equipment.weapon = 'sword_common';
+  const quests = new QuestSystem(seed);
+  const mainNPC = new NPC(MAIN_NPC_POS.x, MAIN_NPC_POS.y, MAIN_NPC.name, MAIN_NPC.img, 'main');
+  const sideNPC = new NPC(SIDE_NPC_POS.x, SIDE_NPC_POS.y, SIDE_NPC.name, SIDE_NPC.img, 'side');
+
+  return {
+    seed, world, spawner, player, clock, survival, inventory, quests,
+    mainNPC, sideNPC, lastSafeX: player.x, lastSafeY: player.y,
+    metSideNpc: false, playingTime: 0, _hpBonusApplied: 0,
+  };
+}
+
+// Equipment hpBonus (e.g. Band of Vigor) is applied on top of survival.maxHp as a
+// delta, so level-ups and save/load stay consistent. The bonus is stripped again
+// at serialize time and re-applied on load.
+function applyEquipmentBonuses(s = state) {
+  const bonus = s.inventory.totalHpBonus();
+  const applied = s._hpBonusApplied || 0;
+  if (bonus === applied) return;
+  const delta = bonus - applied;
+  s.survival.maxHp += delta;
+  if (delta > 0) s.survival.hp += delta;
+  else s.survival.hp = Math.min(s.survival.hp, s.survival.maxHp);
+  s._hpBonusApplied = bonus;
+}
+
+function serializeState(s) {
+  const surv = s.survival.serialize();
+  surv.dead = false; // never persist a dead state — always let the player reload alive
+  const applied = s._hpBonusApplied || 0;
+  surv.maxHp = Math.max(1, surv.maxHp - applied);
+  surv.hp = Math.min(surv.hp, surv.maxHp);
+  return {
+    seed: s.seed,
+    player: { x: s.player.x, y: s.player.y },
+    clock: s.clock.serialize(),
+    survival: surv,
+    inventory: s.inventory.serialize(),
+    quests: s.quests.serialize(),
+    metSideNpc: s.metSideNpc,
+  };
+}
+
+function loadState(data) {
+  if (!data || data.seed == null || !data.player || data.player.x == null ||
+      !data.clock || !data.survival || !data.inventory || !data.quests) {
+    console.warn('save data corrupted — starting new game');
+    clearSave();
+    return null;
   }
+  const s = newGameState(data.seed);
+  s.player.x = data.player.x; s.player.y = data.player.y;
+  s.clock.load(data.clock);
+  s.survival.load(data.survival);
+  s.inventory.load(data.inventory);
+  s.quests.load(data.quests);
+  s.metSideNpc = data.metSideNpc;
+  s.lastSafeX = s.player.x; s.lastSafeY = s.player.y;
+  s._hpBonusApplied = 0;
+  applyEquipmentBonuses(s);
+  return s;
+}
 
-  // NEW: Service Worker update detection
-  // Checks if the SW version has changed and notifies the player
-  let swLastChecked = 0;
+// ---------------------------------------------------------------
+// BOOT
+// ---------------------------------------------------------------
+async function boot() {
+  await loadAssets();
+  document.getElementById('btnNewGame').addEventListener('click', () => startNewGame());
+  if (hasSave()) {
+    document.getElementById('btnContinue').style.display = 'block';
+    document.getElementById('btnContinue').addEventListener('click', () => continueGame());
+  }
+}
+boot();
 
-  function checkForSWUpdate() {
-    const now = Date.now();
-    if (now - swLastChecked < SW_UPDATE_CHECK_INTERVAL) return;
-    swLastChecked = now;
+function startNewGame() {
+  clearSave();
+  state = newGameState(Math.floor(Math.random() * 2147483647));
+  enterWorld();
+}
+function continueGame() {
+  const data = loadGame();
+  if (!data) { startNewGame(); return; }
+  state = loadState(data);
+  if (!state) { startNewGame(); return; }
+  enterWorld();
+}
 
-    if (!('serviceWorker' in navigator)) return;
+function enterWorld() {
+  document.getElementById('titleScreen').classList.add('hidden');
+  document.getElementById('hudTop').classList.remove('hidden');
+  document.getElementById('hudBottom').classList.remove('hidden');
+  document.getElementById('minimapCanvas').classList.remove('hidden');
+  document.getElementById('btnMenu').classList.remove('hidden');
+  resetMinimapState();
+  setupInput();
+  running = true;
+  lastTime = performance.now();
+  requestAnimationFrame(loop);
+}
 
-    navigator.serviceWorker.getRegistration().then((registration) => {
-      if (!registration) return;
+function setupInput() {
+  if (input) return; // only bind once
+  input = new Input(
+    document.getElementById('joystickZone'),
+    document.getElementById('joystickBase'),
+    document.getElementById('joystickNub')
+  );
+  input.bindButton(document.getElementById('btnAttack'), onAttackPress);
+  input.bindButton(document.getElementById('btnInteract'), onInteractPress);
+  input.bindButton(document.getElementById('btnInventory'), () => openInventory());
+  input.bindButton(document.getElementById('btnMap'), () => openWorldMap());
+  document.getElementById('btnCloseInv').addEventListener('click', () => closeModal('inventoryModal'));
+  document.getElementById('btnCloseMap').addEventListener('click', () => closeModal('mapModal'));
+  document.getElementById('btnCloseShop').addEventListener('click', () => closeModal('shopModal'));
+  document.getElementById('btnMenu').addEventListener('click', () => openInventory('quests'));
 
-      const installing = registration.installing;
-      if (installing) {
-        installing.onstatechange = () => {
-          if (installing.state === 'installed') {
-            // New SW installed - check if it's a new version
-            const newVersion = installing.scriptURL;
-            if (newVersion && window.eldenEarthLastVersion !== newVersion) {
-              window.eldenEarthLastVersion = newVersion;
-              showToast("🆕 Game update detected! Reloading to apply...", 8000);
-              // Reload after a delay so player can see the message
-              setTimeout(() => window.location.reload(), 3000);
-            }
-          }
-        };
-      }
+  // minimap tap opens world map
+  const mm = document.getElementById('minimapCanvas');
+  mm.addEventListener('touchstart', e => { e.preventDefault(); openWorldMap(); }, { passive: false });
+  mm.addEventListener('mousedown', e => { e.preventDefault(); openWorldMap(); });
 
-      // Also check waiting SW
-      const waiting = registration.waiting;
-      if (waiting) {
-        waiting.onstatechange = () => {
-          if (waiting.state === 'installed') {
-            showToast("🆕 Game update ready! Reloading to apply...", 8000);
-            setTimeout(() => window.location.reload(), 3000);
-          }
-        };
-      }
+  document.querySelectorAll('.invTab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.invTab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      document.querySelectorAll('.invPanel').forEach(p => p.classList.add('hidden'));
+      document.getElementById('invPanel' + capitalize(tab.dataset.tab)).classList.remove('hidden');
     });
-  }
-
-  // Check for updates on load and periodically
-  checkForSWUpdate();
-  setInterval(checkForSWUpdate, SW_UPDATE_CHECK_INTERVAL);
-
-  function openModal(id) { el(id).classList.remove("hidden"); }
-  function closeModal(id) { el(id).classList.add("hidden"); }
-
-  let cachedCashWhole = null;
-  let cachedCashDecimal = null;
-
-  // High-Efficiency Cached State Tracker (Zero Redundant DOM Reflows)
-  let lastCashStr = "";
-  let lastEBVal = -1;
-  let lastDiaVal = -1;
-  let lastRateVal = "";
-
-  function updateTopbar() {
-    if (document.hidden) return; // Battery Saver: Skip UI work when phone is in pocket!
-    const state = Store.get();
-    if (state.cash === undefined) state.cash = 0;
-
-    // 1. Ultra-Fast Cash Interpolator (Direct TextNode Injection)
-    const cashContainer = el("stat-cash");
-    if (cashContainer) {
-      const val = Number(state.cash) || 0;
-      const fixedStr = val.toFixed(15);
-      if (fixedStr !== lastCashStr) {
-        lastCashStr = fixedStr;
-        const parts = fixedStr.split(".");
-        const whole = parseInt(parts[0], 10);
-        const decimals = parts[1] || "000000000000000";
-        const wholeHTML = whole > 0 ? `<span class="cash-whole">${whole}</span>` : "";
-        cashContainer.innerHTML = `<span class="cash-dollar">$</span>${wholeHTML}<span class="cash-point">.</span><span class="cash-decimal">${decimals}</span>`;
-      }
-    }
-
-    // 2. Dirty-Checked Currency Updates (Only updates DOM if numbers actually changed)
-    const currentEB = Math.floor(Number(state.eb) || 0);
-    if (currentEB !== lastEBVal) {
-      lastEBVal = currentEB;
-      if (el("stat-eb")) el("stat-eb").textContent = currentEB + " EB";
-      if (el("wheel-eb-display")) el("wheel-eb-display").textContent = currentEB + " EB";
-    }
-
-    const currentDiamonds = Number(state.diamonds) || 0;
-    if (currentDiamonds !== lastDiaVal) {
-      lastDiaVal = currentDiamonds;
-      if (el("stat-diamonds")) el("stat-diamonds").innerHTML = `${currentDiamonds} <span class="hud-gem-icon"></span>`;
-      if (el("wheel-diamond-display")) el("wheel-diamond-display").innerHTML = `${currentDiamonds} <span class="hud-gem-icon"></span>`;
-    }
-
-    const currentRate = "$" + Store.totalRate().toFixed(11) + "/s";
-    if (currentRate !== lastRateVal) {
-      lastRateVal = currentRate;
-      if (el("stat-rate")) el("stat-rate").textContent = currentRate;
-    }
-
-    // 3. Global 50X Event Engine (Active RIGHT NOW for 24 Hours -> 3-Day 30X Cooldown)
-    const now = Date.now();
-    const EVENT_START_ANCHOR = 1788912000000;     // Starts right now worldwide!
-    const EVENT_24H = 24 * 3600 * 1000;           // 24-Hour Active Window
-    const COOLDOWN_72H = 3 * 24 * 3600 * 1000;    // 3 Days (72 Hours)
-    const TOTAL_CYCLE = EVENT_24H + COOLDOWN_72H; // 96-Hour Full Cycle
-
-    let cycleElapsed = (now - EVENT_START_ANCHOR) % TOTAL_CYCLE;
-    if (cycleElapsed < 0) cycleElapsed += TOTAL_CYCLE;
-    const is50XEvent = cycleElapsed < EVENT_24H;
-
-    const isBoosted = state.boostExpiry && state.boostExpiry > now;
-    const heroCard = el("hero-balance-card");
-    const timerBadge = el("boost-timer-badge");
-    const multBtn = el("multiplier-btn");
-
-    // Update Floating Button Tag (50X vs 30X)
-    if (el("mult-label")) el("mult-label").textContent = is50XEvent ? "50X" : "30X";
-    if (multBtn) {
-      if (is50XEvent) multBtn.classList.add("event-50x");
-      else multBtn.classList.remove("event-50x");
-    }
-
-    if (isBoosted) {
-      const remainingMs = state.boostExpiry - now;
-      // AUTOMATIC UPGRADE: If event is active, force active multiplier to 50X!
-      const activeMult = is50XEvent ? 50 : (state.boostMultiplier || 30);
-
-      heroCard?.classList.add("boosted");
-      timerBadge?.classList.remove("hidden");
-
-      // Shaking & Vibrate Effect when 50X is active!
-      if (activeMult === 50) {
-        heroCard?.classList.add("super-50x");
-        timerBadge?.classList.add("super-50x");
-      } else {
-        heroCard?.classList.remove("super-50x");
-        timerBadge?.classList.remove("super-50x");
-      }
-
-      const hrs = Math.floor(remainingMs / 3600000);
-      const mins = Math.floor((remainingMs % 3600000) / 60000);
-      const secs = Math.floor((remainingMs % 60000) / 1000);
-      const timerStr = `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-
-      if (timerBadge) {
-        const icon = activeMult === 50 ? "🔥" : "⚡";
-        timerBadge.innerHTML = `${icon} ${activeMult}X BOOST <span id="boost-countdown">${timerStr}</span>`;
-      }
-
-      if (multBtn) {
-        multBtn.style.display = remainingMs >= 5 * 3600000 ? "none" : "flex";
-      }
-    } else {
-      heroCard?.classList.remove("boosted", "super-50x");
-      timerBadge?.classList.remove("super-50x");
-      timerBadge?.classList.add("hidden");
-      if (multBtn) multBtn.style.display = "flex";
-    }
-
-    // 4. Live Player Identity Chip (Name & Photo Avatar)
-    const playerNameEl = el("player-name");
-    const playerAvatarEl = el("player-avatar");
-    const pName = state.player?.name || "Traveler";
-    const pAvatar = state.player?.avatar || "🙂";
-
-    if (playerNameEl && playerNameEl.textContent !== pName) {
-      playerNameEl.textContent = pName;
-    }
-
-    if (playerAvatarEl) {
-      if (pAvatar.startsWith("img:")) {
-        const imgSrc = pAvatar.slice(4);
-        if (!playerAvatarEl.querySelector("img") || playerAvatarEl.querySelector("img").src !== imgSrc) {
-          playerAvatarEl.innerHTML = `<img src="${imgSrc}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;">`;
-        }
-      } else if (playerAvatarEl.textContent !== pAvatar) {
-        playerAvatarEl.textContent = pAvatar;
-      }
-    }
-  }
-
-  function updateLandModal() {
-    const state = Store.get();
-    el("land-count").textContent = Object.keys(state.plots).length;
-    el("land-rate").textContent = Store.totalRate().toFixed(11);
-
-    // Count plots by rarity
-    const counts = { common: 0, rare: 0, epic: 0, legendary: 0 };
-    for (const id in state.plots) {
-      const r = state.plots[id].rarity?.key || state.plots[id].rarity;
-      if (counts[r] !== undefined) counts[r]++;
-    }
-
-    if (el("count-common")) el("count-common").textContent = counts.common;
-    if (el("count-rare")) el("count-rare").textContent = counts.rare;
-    if (el("count-epic")) el("count-epic").textContent = counts.epic;
-    if (el("count-legendary")) el("count-legendary").textContent = counts.legendary;
-
-    CONFIG.PLOT_RARITIES.forEach(rarity => {
-      if (el(`weight-${rarity.key}`)) el(`weight-${rarity.key}`).textContent = rarity.weight;
-      if (el(`rate-${rarity.key}`)) el(`rate-${rarity.key}`).textContent = rarity.rate;
-    });
-  }
-  
-  async function updatePlayerInfoModal(targetPlayerData = null) {
-    const state = Store.get();
-    const isOtherPlayer = targetPlayerData && targetPlayerData.ownerId !== state.player.id;
-    
-    const name = isOtherPlayer ? (targetPlayerData.ownerName || "Traveler") : (state.player.name || "Traveler");
-    const avatar = isOtherPlayer ? (targetPlayerData.avatar || "🙂") : (state.player.avatar || "🙂");
-
-    el("info-name").textContent = name;
-    
-    // Avatar
-    const av = el("info-avatar");
-    if (avatar && avatar.startsWith("img:")) {
-      av.innerHTML = `<img src="${avatar.slice(4)}">`;
-    } else {
-      av.textContent = avatar || "🙂";
-    }
-
-    // Only show the edit pencils on your own profile
-    const editAvatarBtn = el("edit-avatar-btn");
-    const editNameBtn = el("edit-name-btn");
-    if (editAvatarBtn) editAvatarBtn.style.display = isOtherPlayer ? "none" : "flex";
-    if (editNameBtn) editNameBtn.style.display = isOtherPlayer ? "none" : "inline-flex";
-
-    // Hide "Sign in with Google" button for authenticated Google players; only show for guests
-    const googleLinkSection = el("info-google-link-section");
-    if (googleLinkSection) {
-      const fbUser = (typeof firebase !== "undefined" && firebase.auth) ? firebase.auth().currentUser : null;
-      const isGuest = fbUser ? fbUser.isAnonymous : (!state.player?.id || state.player.id.startsWith("guest-"));
-      googleLinkSection.style.display = isGuest ? "block" : "none";
-    }
-
-    // Initial Rent Display (Shows Lifetime Accrued Rent, NOT spendable balance)
-    let rentVal = isOtherPlayer ? 0 : (state.lifetimeRent || state.cash || 0);
-    el("info-total-rent").textContent = "$" + Number(rentVal).toFixed(15);
-
-    // Fetch and display the other player's live cloud earnings (including offline accumulation)
-    if (isOtherPlayer && targetPlayerData.ownerId) {
-      const db = Store.getDb();
-      if (db) {
-        try {
-          const doc = await db.collection("saves").doc(targetPlayerData.ownerId).get();
-          if (doc.exists) {
-            const dData = doc.data();
-            const now = Date.now();
-            const lastActive = dData.lastTick || dData.createdAt || now;
-            const offlineSec = Math.max(0, (now - lastActive) / 1000);
-
-            // Calculate target player's base rate
-            let playerBaseRate = 0;
-            for (const id in allPlots) {
-              if (allPlots[id].ownerId === targetPlayerData.ownerId) {
-                const rKey = allPlots[id].rarity?.key || allPlots[id].rarity;
-                const confR = CONFIG.PLOT_RARITIES.find(r => r.key === rKey);
-                playerBaseRate += (confR ? confR.rate : CONFIG.PLOT_RARITIES[0].rate);
-              }
-            }
-
-            const offlineEarned = offlineSec * playerBaseRate;
-            let lRent = (dData.lifetimeRent !== undefined ? dData.lifetimeRent : (dData.cash || 0)) + offlineEarned;
-
-            if ((dData.player?.name || "").toLowerCase().includes("cwood") && lRent < 0.50) {
-              lRent = 0.854210 + offlineEarned;
-            }
-
-            el("info-total-rent").textContent = "$" + Number(lRent).toFixed(15);
-          }
-        } catch (e) {
-          console.warn("[PlayerInfo] Error fetching player cash:", e);
-        }
-      }
-    }
-
-    // Calculate Counts from global plots
-    const allPlots = (typeof Grid !== "undefined" && Grid.getAllPlots) ? Grid.getAllPlots() : state.plots;
-    const targetOwnerId = isOtherPlayer ? targetPlayerData.ownerId : state.player.id;
-
-    const counts = { common: 0, rare: 0, epic: 0, legendary: 0 };
-    let total = 0;
-
-    for (const id in allPlots) {
-      if (allPlots[id].ownerId === targetOwnerId) {
-        const r = allPlots[id].rarity?.key || allPlots[id].rarity;
-        if (counts[r] !== undefined) counts[r]++;
-        total++;
-      }
-    }
-
-    el("info-total-plots").textContent = total;
-    el("info-count-common").textContent = counts.common;
-    el("info-count-rare").textContent = counts.rare;
-    el("info-count-epic").textContent = counts.epic;
-    el("info-count-legendary").textContent = counts.legendary;
-
-    // --- Populate Mayorship & Dividends Card ---
-    const mayorStatusEl = el("info-mayor-status");
-    const dividendsEl = el("info-total-dividends");
-    const royaltyBadge = el("info-royalty-badge") || document.querySelector(".mayorship-dividends-card .btn-royalty, .mayorship-dividends-card span:last-child");
-
-    let totalDiv = isOtherPlayer ? 0 : (state.totalDividends || 0);
-    if (dividendsEl) dividendsEl.textContent = `${totalDiv} EB`;
-
-    if (mayorStatusEl) {
-      mayorStatusEl.textContent = "Checking realm...";
-      if (typeof Leaderboard !== "undefined" && Leaderboard.fetchRankings) {
-        Leaderboard.fetchRankings().then((data) => {
-          const targetPlayerStat = (data.players || []).find(p => p.id === targetOwnerId);
-          const titlesList = [];
-
-          if (targetPlayerStat && targetPlayerStat.badges) {
-            targetPlayerStat.badges.forEach(b => {
-              titlesList.push(`${b.icon} ${b.title}`);
-            });
-          }
-
-          if (titlesList.length > 0) {
-            mayorStatusEl.innerHTML = titlesList.join("<br>");
-            mayorStatusEl.className = "mayor-crown-pill active-mayor";
-
-            const myMayors = targetPlayerStat?.badges?.filter(b => b.scope === "city") || [];
-            const myGovs = targetPlayerStat?.badges?.filter(b => b.scope === "state") || [];
-            const myPres = targetPlayerStat?.badges?.filter(b => b.scope === "country") || [];
-            
-            const stackRate = Math.min(6, (myMayors.length ? 2 : 0) + (myGovs.length ? 2 : 0) + (myPres.length ? 2 : 0));
-            if (royaltyBadge) {
-              royaltyBadge.textContent = `${stackRate}% Royalty`;
-              royaltyBadge.style.display = "inline-block";
-            }
-          } else {
-            mayorStatusEl.innerHTML = `🛡️ Citizen of the Realm`;
-            mayorStatusEl.className = "mayor-crown-pill";
-            if (royaltyBadge) {
-              royaltyBadge.textContent = "0% (Citizen)";
-              royaltyBadge.style.opacity = "0.6";
-            }
-          }
-        });
-      } else {
-        mayorStatusEl.textContent = "🛡️ Citizen of the Realm";
-      }
-    }
-  }
-
-  // ---------------- Sign-in & Sequenced Boot ----------------
-  function onSignedIn(playerData) {
-    const player = playerData || Store.get()?.player || { name: "Traveler" };
-    console.log("[Main] onSignedIn called with player:", player);
-
-    // Force immediate dismissal of signin screen on all browsers (Brave, Chrome, Safari)
-    const signin = document.getElementById("signin-screen");
-    if (signin) {
-      signin.classList.add("hidden");
-      signin.style.display = "none";
-    }
-
-    // Execute the professional 3D load pipeline
-    if (typeof Bootloader !== "undefined" && Bootloader.run) {
-      Bootloader.run(player, (coords) => {
-        launchGame(coords);
-        beginWatch();
-      });
-    } else {
-      launchGame();
-    }
-  }
-
-  // ---------------- Location ----------------
-  function startLocating() {
-    if (!("geolocation" in navigator)) {
-      el("locate-status").textContent = "Your device doesn't support location services.";
-      return;
-    }
-    el("locate-status").textContent = "Locating…";
-    navigator.geolocation.getCurrentPosition(
-      (pos) => { launchGame(pos.coords); beginWatch(); },
-      (err) => { el("locate-status").textContent = "Location denied — enable it in your browser settings and try again."; },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
-    );
-  }
-
-  // High-Efficiency GPS Hardware Controller (Saves 40% Battery)
-  let lastProcessedLat = 0;
-  let lastProcessedLon = 0;
-
-  function beginWatch() {
-    if (!navigator.geolocation) return;
-    if (watchId) navigator.geolocation.clearWatch(watchId);
-
-    watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        // Battery Guard: Don't spend CPU if phone screen is locked
-        if (document.hidden) return;
-
-        const { latitude, longitude } = pos.coords;
-        // Only trigger heavy map/character updates if player actually moved > 1.5 meters
-        const distMoved = Geo.haversine(lastProcessedLat, lastProcessedLon, latitude, longitude);
-        if (distMoved > 1.5 || lastProcessedLat === 0) {
-          lastProcessedLat = latitude;
-          lastProcessedLon = longitude;
-          handlePosition(pos.coords);
-        }
-      },
-      (err) => console.warn("watchPosition error", err),
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
-    );
-  }
-
-  // Turn off GPS satellite radio when screen is locked in pocket
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      if (watchId) { navigator.geolocation.clearWatch(watchId); watchId = null; }
-    } else {
-      if (!watchId) beginWatch();
-    }
   });
 
-  function updatePlayerRadiusLayer() {
-    if (!map || !currentPos) return;
-    const radiusM = CONFIG.DIAMOND_COLLECT_RADIUS_METERS || 100;
-    const ringCoords = Geo.createCirclePolygon(currentPos.lat, currentPos.lon, radiusM);
+  document.querySelectorAll('.shopTabs .invTab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.shopTabs .invTab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      document.querySelectorAll('.shopPanel').forEach(p => p.classList.add('hidden'));
+      document.getElementById('shopPanel' + capitalize(tab.dataset.shop)).classList.remove('hidden');
+    });
+  });
+}
+function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
-    const data = {
-      type: "FeatureCollection",
-      features: [
-        // 100m boundary polygon
-        {
-          type: "Feature",
-          properties: { type: "boundary" },
-          geometry: { type: "Polygon", coordinates: [ringCoords] }
-        },
-        // Center point for the pulsing shockwave
-        {
-          type: "Feature",
-          properties: { type: "center" },
-          geometry: { type: "Point", coordinates: [currentPos.lon, currentPos.lat] }
-        }
-      ]
+// ---------------------------------------------------------------
+// MAIN LOOP
+// ---------------------------------------------------------------
+function loop(now) {
+  if (!running) return;
+  let dt = (now - lastTime) / 1000;
+  lastTime = now;
+  dt = Math.min(dt, 0.05);
+
+  // save timer runs every frame — even while dead or a modal is open — so
+  // short play sessions still get persisted
+  saveTimer += dt;
+  if (saveTimer > 6 || (saveNeeded && saveTimer > 1.2)) {
+    saveTimer = 0; saveNeeded = false;
+    if (state) saveGame(serializeState(state));
+  }
+
+  if (!anyModalOpen() && !state.survival.dead) {
+    update(dt);
+  }
+  render();
+  requestAnimationFrame(loop);
+}
+
+function update(dt) {
+  const { player, world, spawner, clock, survival, quests } = state;
+  clock.update(dt);
+  const gameHoursDelta = dt * clock.gameHoursPerRealSecond;
+  survival.tick(gameHoursDelta, clock.isNight, dt);
+
+  player.update(dt, input);
+  moveWithCollision(player, dt, world, spawner);
+
+  spawner.populateAround(player.x, player.y, 1400);
+  spawner.prune(player.x, player.y, 1400);
+
+  for (const enemy of spawner.enemies) {
+    enemy.update(dt, player, world);
+    if (!enemy.dead) {
+      const dmg = enemy.tryAttack(player);
+      if (dmg > 0) {
+        const armor = state.inventory.totalArmor();
+        const finalDmg = Math.max(1, dmg - armor * 0.4);
+        survival.damage(finalDmg);
+        player.hitFlash = 0.2;
+        const sp = camera.worldToScreen(player.x, player.y);
+        spawnFloatText('-' + Math.round(finalDmg), sp.x, sp.y - 20, '#ff6a5a');
+      }
+    }
+  }
+
+  if (Math.hypot(player.x - state.mainNPC.x, player.y - state.mainNPC.y) < 260 &&
+      Math.hypot(player.x - SIDE_NPC_POS.x, player.y - SIDE_NPC_POS.y) > 300) {
+    // near main npc & safe-ish: treat as a safe checkpoint for respawn
+    state.lastSafeX = player.x; state.lastSafeY = player.y;
+  }
+
+  if (!state.metSideNpc && Math.hypot(player.x - state.sideNPC.x, player.y - state.sideNPC.y) < 250) {
+    state.metSideNpc = true;
+    quests.onSideNpcMet();
+  }
+
+  camera.follow(player.x, player.y);
+  updateMinimap(dt);
+  updateHUD(survival, clock, quests);
+
+  if (quests.shouldShowReminder(clock.totalGameHours)) {
+    showReminder(MAIN_NPC.name,
+      "Wanderer... have you forgotten the task at hand? The Reach doesn't wait for the idle.",
+      null);
+  }
+
+  if (survival.dead) {
+    onPlayerDeath();
+  }
+}
+
+function moveWithCollision(player, dt, world, spawner) {
+  if (player.vx === 0 && player.vy === 0) return;
+  const tryMove = (nx, ny) => {
+    if (world.isWater(nx, ny)) return false;
+    const chunkList = world.chunksInRadius(nx, ny, 90);
+    for (const [cx, cy] of chunkList) {
+      const chunk = world.getChunk(cx, cy);
+      for (const prop of chunk.props) {
+        if (!prop.solid) continue;
+        if (Math.hypot(prop.x - nx, prop.y - ny) < prop.radius + 12) return false;
+      }
+    }
+    return true;
+  };
+  const nx = player.x + player.vx * dt;
+  const ny = player.y + player.vy * dt;
+  if (tryMove(nx, player.y)) player.x = nx;
+  if (tryMove(player.x, ny)) player.y = ny;
+}
+
+// ---------------------------------------------------------------
+// ACTIONS
+// ---------------------------------------------------------------
+function onAttackPress() {
+  if (anyModalOpen() || state.survival.dead) return;
+  const { player, survival, inventory, spawner, quests } = state;
+  if (!player.canAttack()) return;
+  if (!survival.spendStamina(PLAYER_ATTACK_STAMINA_COST)) { showToast('Too exhausted to swing!'); return; }
+  player.triggerAttack(ATTACK_COOLDOWN);
+  const hb = player.attackHitbox(ATTACK_RANGE);
+
+  let hitSomething = false;
+  for (const enemy of spawner.enemies) {
+    if (enemy.dead) continue;
+    if (!inRange(hb.x, hb.y, enemy.x, enemy.y, hb.r)) continue;
+    const dmg = rollPlayerDamage(inventory.weaponDef(), inventory.totalDmgBonus());
+    const killed = enemy.takeDamage(dmg);
+    hitSomething = true;
+    const sp = camera.worldToScreen(enemy.x, enemy.y);
+    spawnFloatText('-' + dmg, sp.x, sp.y - 30, '#ffd35a');
+    if (killed) onEnemyKilled(enemy);
+    break;
+  }
+  if (!hitSomething) {
+    for (const c of spawner.caches) {
+      if (c.opened) continue;
+      if (!inRange(hb.x, hb.y, c.x, c.y, hb.r)) continue;
+      const dmg = rollPlayerDamage(inventory.weaponDef(), inventory.totalDmgBonus());
+      const opened = c.takeDamage(dmg);
+      const sp = camera.worldToScreen(c.x, c.y);
+      spawnFloatText('-' + dmg, sp.x, sp.y - 20, '#dcdcdc');
+      if (opened) onCacheOpened(c);
+      break;
+    }
+  }
+}
+
+function onEnemyKilled(enemy) {
+  const { survival, inventory, quests } = state;
+  const ups = survival.addXP(enemy.stats.xp);
+  const drops = rollLootTable(enemy.stats.isElite ? 'enemy_elite' : 'enemy_common', Math.random);
+  let goldGain = 0;
+  for (const d of drops) {
+    inventory.add(d.item, d.qty);
+    if (d.item === 'gold') { survival.gold += d.qty; goldGain += d.qty; }
+  }
+  quests.onEnemyKilled(enemy.stats.type, enemy.stats.isElite);
+  for (const d of drops) if (d.item !== 'gold') quests.onItemCollected(d.item, inventory);
+  const sp = camera.worldToScreen(enemy.x, enemy.y);
+  spawnFloatText(`+${enemy.stats.xp} XP`, sp.x, sp.y - 44, '#b183ff');
+  if (goldGain > 0) spawnFloatText(`+${goldGain} gold`, sp.x, sp.y - 60, '#e9c877');
+  for (const d of drops) {
+    const r = ITEMS[d.item].rarity;
+    if (d.item !== 'gold' && (r === 'rare' || r === 'legendary')) showToast(`Looted: ${ITEMS[d.item].name}!`);
+  }
+  showToast(`Defeated ${enemy.stats.name}`);
+  if (ups.length) showToast(`Level up! You are now level ${ups[ups.length - 1]}.`, 2800);
+  requestSave();
+}
+
+function onCacheOpened(cache) {
+  const { inventory, quests } = state;
+  const drops = rollLootTable(cache.tier.key, Math.random);
+  quests.onCacheOpened();
+  showLoot(drops, () => {
+    for (const d of drops) {
+      inventory.add(d.item, d.qty);
+      if (d.item === 'gold') state.survival.gold += d.qty;
+      else quests.onItemCollected(d.item, inventory);
+    }
+    showToast('Loot added to your bag.');
+    requestSave();
+  });
+}
+
+function onInteractPress() {
+  if (anyModalOpen() || state.survival.dead) return;
+  const { player, mainNPC, sideNPC, quests, clock } = state;
+  if (Math.hypot(player.x - mainNPC.x, player.y - mainNPC.y) < 90) { talkToMainNPC(); return; }
+  if (Math.hypot(player.x - sideNPC.x, player.y - sideNPC.y) < 90) { talkToSideNPC(); return; }
+
+  // no one nearby: offer to make camp if no enemies close
+  const enemiesNear = state.spawner.nearbyEnemies(player.x, player.y, 260).length;
+  if (enemiesNear > 0) { showToast('Too dangerous to make camp here!'); return; }
+  showSystemMessage('Make camp and rest until the stamina returns? (advances time several hours)', () => {
+    const hours = 4;
+    clock.totalGameHours += hours;
+    state.survival.tick(0, false);
+    state.survival.rest(100);
+    state.survival.stamina = state.survival.maxStamina;
+    state.lastSafeX = player.x; state.lastSafeY = player.y;
+    showToast('You rest by a quiet fire. Time passes...');
+    requestSave();
+  });
+}
+
+function grantQuestReward(reward) {
+  const { survival, inventory, player } = state;
+  survival.addXP(reward.xp || 0);
+  survival.gold += reward.gold || 0;
+  (reward.items || []).forEach(it => inventory.add(it, 1));
+  const sp = camera.worldToScreen(player.x, player.y);
+  if (reward.xp) spawnFloatText(`+${reward.xp} XP`, sp.x, sp.y - 40, '#b183ff');
+  if (reward.gold) spawnFloatText(`+${reward.gold} gold`, sp.x, sp.y - 56, '#e9c877');
+  (reward.items || []).forEach(it => showToast(`Received: ${ITEMS[it].name}`));
+  requestSave();
+}
+
+function talkToMainNPC() {
+  const { quests, clock } = state;
+  if (quests.isMainObjectivesComplete()) {
+    const completed = quests.turnInMain(clock.totalGameHours);
+    grantQuestReward(completed.reward);
+    showDialogue(MAIN_NPC.name,
+      `${completed.onComplete}\n\nNew task: "${quests.currentMain.title}" — ${quests.currentMain.text}`,
+      [{ label: 'Onward.', onSelect: () => {} }]);
+  } else {
+    const objectives = quests.objectiveSummary(quests.mainProgress).join('\n');
+    showDialogue(MAIN_NPC.name, `${quests.currentMain.text}\n\n${objectives}`,
+      [{ label: 'I\'ll return when it\'s done.', onSelect: () => {} }]);
+  }
+}
+
+function talkToSideNPC() {
+  const { quests, clock } = state;
+  const tradeChoice = { label: 'Trade', onSelect: () => openShop() };
+  if (!quests.currentSide) {
+    showDialogue(SIDE_NPC.name, "You've done more for this old trader than I ever expected. Safe travels, wanderer.",
+      [tradeChoice, { label: 'Farewell.', onSelect: () => {} }]);
+    return;
+  }
+  if (quests.isSideObjectivesComplete()) {
+    const completed = quests.turnInSide(clock.totalGameHours);
+    grantQuestReward(completed.reward);
+    const next = quests.currentSide ? `New task: "${quests.currentSide.title}" — ${quests.currentSide.text}` : "That's the last favor I've got, friend.";
+    showDialogue(SIDE_NPC.name, `${completed.onComplete}\n\n${next}`,
+      [tradeChoice, { label: 'Take care.', onSelect: () => {} }]);
+  } else {
+    const objectives = quests.objectiveSummary(quests.sideProgress).join('\n');
+    showDialogue(SIDE_NPC.name, `${quests.currentSide.text}\n\n${objectives}`,
+      [tradeChoice, { label: 'I\'ll be back.', onSelect: () => {} }]);
+  }
+}
+
+function onPlayerDeath() {
+  showSystemMessage('You collapse in the wilds... The Reach shows mercy, this once.', () => {
+    state.survival.revive();
+    state.player.x = state.lastSafeX; state.player.y = state.lastSafeY;
+  });
+}
+
+// ---------------------------------------------------------------
+// MINIMAP + WORLD MAP
+// ---------------------------------------------------------------
+const MINIMAP_SIZE = 90;
+const MINIMAP_RADIUS = 600;
+const MINIMAP_STEP = (MINIMAP_RADIUS * 2) / MINIMAP_SIZE;
+const MINIMAP_SAMPLE = 2;
+const MINIMAP_INTERVAL = 0.5;
+
+const BIOME_COLORS = {
+  water: '#2a5a8a', sand: '#c4b87a', grass: '#4a7c35', forest: '#2d5a1e', stone: '#7a7a70', cave: '#3a3a30',
+};
+
+let minimapCtx = null;
+let minimapTerrainCanvas = null;
+let minimapDirty = true;
+let minimapTimer = 0;
+let lastMinimapWX = 0, lastMinimapWY = 0;
+
+function resetMinimapState() {
+  minimapDirty = true;
+  minimapTimer = 0;
+  lastMinimapWX = 0; lastMinimapWY = 0;
+}
+
+function updateMinimap(dt) {
+  minimapTimer += dt;
+  const dist = Math.hypot(state.player.x - lastMinimapWX, state.player.y - lastMinimapWY);
+  if (minimapTimer > MINIMAP_INTERVAL || (dist > MINIMAP_RADIUS * 0.12 && minimapTimer > 0.1)) {
+    minimapDirty = true;
+    minimapTimer = 0;
+    lastMinimapWX = state.player.x;
+    lastMinimapWY = state.player.y;
+  }
+}
+
+function drawMinimap() {
+  if (!state) return;
+  const canvas = document.getElementById('minimapCanvas');
+  if (!minimapCtx) minimapCtx = canvas.getContext('2d');
+  if (!minimapTerrainCanvas) {
+    minimapTerrainCanvas = document.createElement('canvas');
+    minimapTerrainCanvas.width = MINIMAP_SIZE;
+    minimapTerrainCanvas.height = MINIMAP_SIZE;
+  }
+
+  if (minimapDirty) {
+    renderMinimapTerrain();
+    minimapDirty = false;
+  }
+
+  const ctx = minimapCtx;
+  ctx.clearRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
+  ctx.drawImage(minimapTerrainCanvas, 0, 0);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(MINIMAP_SIZE / 2, MINIMAP_SIZE / 2, MINIMAP_SIZE / 2 - 2, 0, Math.PI * 2);
+  ctx.clip();
+
+  drawMinimapEntities(ctx);
+
+  ctx.strokeStyle = 'rgba(233,200,119,0.45)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(MINIMAP_SIZE / 2, MINIMAP_SIZE / 2, MINIMAP_SIZE / 2 - 2, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function renderMinimapTerrain() {
+  const { player, world } = state;
+  const tCtx = minimapTerrainCanvas.getContext('2d');
+  const half = MINIMAP_SIZE / 2;
+  const step = MINIMAP_STEP * MINIMAP_SAMPLE;
+
+  tCtx.clearRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
+  tCtx.fillStyle = '#0d0f0c';
+  tCtx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
+
+  for (let my = 0; my < MINIMAP_SIZE; my += MINIMAP_SAMPLE) {
+    for (let mx = 0; mx < MINIMAP_SIZE; mx += MINIMAP_SAMPLE) {
+      const wx = player.x + (mx - half) * MINIMAP_STEP;
+      const wy = player.y + (my - half) * MINIMAP_STEP;
+      const biome = world.tileAtWorld(wx + 1, wy + 1) || 'grass';
+      tCtx.fillStyle = BIOME_COLORS[biome] || '#4a7c35';
+      tCtx.fillRect(mx, my, MINIMAP_SAMPLE, MINIMAP_SAMPLE);
+    }
+  }
+}
+
+function m2w(mx, my) {
+  const half = MINIMAP_SIZE / 2;
+  return {
+    x: state.player.x + (mx - half) * MINIMAP_STEP,
+    y: state.player.y + (my - half) * MINIMAP_STEP,
+  };
+}
+
+function worldToMini(wx, wy) {
+  const half = MINIMAP_SIZE / 2;
+  return {
+    x: half + (wx - state.player.x) / MINIMAP_STEP,
+    y: half + (wy - state.player.y) / MINIMAP_STEP,
+  };
+}
+
+function drawMinimapEntities(ctx) {
+  const { player, mainNPC, sideNPC, spawner } = state;
+  const half = MINIMAP_SIZE / 2;
+  const maxR = MINIMAP_SIZE / 2 - 5; // inside the circle border
+
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(half, half, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  const dirAngles = { down: Math.PI / 2, up: -Math.PI / 2, left: Math.PI, right: 0 };
+  const da = dirAngles[player.facing] || 0;
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(half, half);
+  ctx.lineTo(half + Math.cos(da) * 6, half + Math.sin(da) * 6);
+  ctx.stroke();
+
+  function drawClamped(wx, wy, color, r, isImportant) {
+    const dx = (wx - player.x) / MINIMAP_STEP;
+    const dy = (wy - player.y) / MINIMAP_STEP;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 0.1) return; // too close to center (shouldn't happen for NPCs far away)
+    const mx = half + dx;
+    const my = half + dy;
+    if (dist < maxR) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(mx, my, r, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const ang = Math.atan2(dy, dx);
+      const ex = half + Math.cos(ang) * maxR;
+      const ey = half + Math.sin(ang) * maxR;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(ex, ey, r + (isImportant ? 1 : 0), 0, Math.PI * 2);
+      ctx.fill();
+      if (isImportant) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.45;
+        ctx.beginPath();
+        ctx.arc(ex, ey, r + 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  drawClamped(mainNPC.x, mainNPC.y, '#e9c877', 3, true);
+  drawClamped(sideNPC.x, sideNPC.y, '#8ab0e9', 3, true);
+
+  for (const e of spawner.enemies) {
+    if (e.dead) continue;
+    const p = worldToMini(e.x, e.y);
+    if (p.x < 0 || p.x >= MINIMAP_SIZE || p.y < 0 || p.y >= MINIMAP_SIZE) continue;
+    ctx.fillStyle = e.stats.isElite ? '#d08bff' : '#e05a4e';
+    ctx.fillRect(Math.round(p.x) - 1, Math.round(p.y) - 1, 3, 3);
+  }
+
+  for (const c of spawner.caches) {
+    if (c.opened) continue;
+    const p = worldToMini(c.x, c.y);
+    if (p.x < 0 || p.x >= MINIMAP_SIZE || p.y < 0 || p.y >= MINIMAP_SIZE) continue;
+    ctx.fillStyle = '#6ad8e0';
+    ctx.fillRect(Math.round(p.x) - 1, Math.round(p.y) - 1, 3, 3);
+  }
+}
+
+// ---- World Map ----
+const WORLD_MAP_SIZE = 300;
+const WORLD_MAP_RADIUS = 4800;
+const WORLD_MAP_STEP = (WORLD_MAP_RADIUS * 2) / WORLD_MAP_SIZE;
+const WORLD_MAP_SAMPLE = 3;
+
+function openWorldMap() {
+  renderWorldMap();
+  openModal('mapModal');
+}
+
+function renderWorldMap() {
+  const canvas = document.getElementById('mapCanvas');
+  const ctx = canvas.getContext('2d');
+  const { player, world, mainNPC, sideNPC, spawner, quests } = state;
+  const half = WORLD_MAP_SIZE / 2;
+  const step = WORLD_MAP_STEP * WORLD_MAP_SAMPLE;
+
+  ctx.clearRect(0, 0, WORLD_MAP_SIZE, WORLD_MAP_SIZE);
+  ctx.fillStyle = '#0a0c08';
+  ctx.fillRect(0, 0, WORLD_MAP_SIZE, WORLD_MAP_SIZE);
+
+  for (let my = 0; my < WORLD_MAP_SIZE; my += WORLD_MAP_SAMPLE) {
+    for (let mx = 0; mx < WORLD_MAP_SIZE; mx += WORLD_MAP_SAMPLE) {
+      const wx = player.x + (mx - half) * WORLD_MAP_STEP;
+      const wy = player.y + (my - half) * WORLD_MAP_STEP;
+      const biome = world.tileAtWorld(wx + 1, wy + 1) || 'grass';
+      ctx.fillStyle = BIOME_COLORS[biome] || '#4a7c35';
+      ctx.fillRect(mx, my, WORLD_MAP_SAMPLE, WORLD_MAP_SAMPLE);
+    }
+  }
+
+  function w2m(wx, wy) {
+    return {
+      x: half + (wx - player.x) / WORLD_MAP_STEP,
+      y: half + (wy - player.y) / WORLD_MAP_STEP,
     };
+  }
 
-    if (map.getSource("player-sonar-source")) {
-      map.getSource("player-sonar-source").setData(data);
+  function marker(wx, wy, color, label, isNpc) {
+    const p = w2m(wx, wy);
+    const r = isNpc ? 5 : 4;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    if (isNpc) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r + 2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (label) {
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = '#000';
+      ctx.shadowBlur = 3;
+      ctx.fillText(label, p.x, p.y - r - 7);
+      ctx.shadowBlur = 0;
     }
   }
 
-  let lastCameraCenter = null;
+  // Player — larger, directional
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(half, half, 7, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(half, half, 9, 0, Math.PI * 2);
+  ctx.stroke();
+  const dirAngles = { down: Math.PI / 2, up: -Math.PI / 2, left: Math.PI, right: 0 };
+  const da = dirAngles[player.facing] || 0;
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.arc(half + Math.cos(da) * 4, half + Math.sin(da) * 4, 3.5, 0, Math.PI * 2);
+  ctx.fill();
 
-  function handlePosition(coords) {
-    currentPos = { lat: coords.latitude, lon: coords.longitude };
-    if (!map) return;
-    
-    if (typeof Citadels !== "undefined") Citadels.setPlayerPosition(currentPos.lat, currentPos.lon);
-    
-    // 1. Move 3D Character & Radius Layer
-    Character3D.setPlayerPosition(currentPos.lon, currentPos.lat);
-    updatePlayerRadiusLayer();
-    Diamonds.setPlayerPosition(currentPos.lat, currentPos.lon);
+  marker(mainNPC.x, mainNPC.y, '#e9c877', 'Warden', true);
+  marker(sideNPC.x, sideNPC.y, '#8ab0e9', 'Trader', true);
 
-    // 2. Camera Follow Deadzone: Only glide camera if player actually moved > 0.8 meters
-    const dist = lastCameraCenter ? Geo.haversine(lastCameraCenter.lat, lastCameraCenter.lon, currentPos.lat, currentPos.lon) : 999;
-
-    if (dist > 0.8 && !isUserInteracting && !isOrbiting) {
-      lastCameraCenter = { lat: currentPos.lat, lon: currentPos.lon };
-      map.easeTo({
-        center: [currentPos.lon, currentPos.lat],
-        duration: 1000,
-        easing: (t) => t,
-        essential: true
-      });
-    }
-  }
-  
-  // ---------------- 3D Map / Game Launch with Auto-Fallback ----------------
-  function launchGame(coords) {
-    currentPos = { lat: coords.latitude, lon: coords.longitude };
-    el("locate-screen")?.classList.add("hidden");
-    el("loading-screen")?.classList.add("hidden");
-    el("game-screen")?.classList.remove("hidden");
-
-    const mapStyle = "https://tiles.openfreemap.org/styles/dark";
-
-    // 1. Initialize 3D Camera with 2-Finger Vertical Tilt & 1-Finger Orbit
-    map = new mapboxgl.Map({
-      container: "map",
-      style: mapStyle,
-      center: [currentPos.lon, currentPos.lat],
-      zoom: 18.5,
-      minZoom: 15.2,     // 1 mile max zoom-out
-      maxZoom: 19.6,     // Street-level max zoom-in
-      pitch: 60,         // Default 60° angle
-      minPitch: 0,       // Allows flat 0° top-down view
-      maxPitch: 70,      // Allows cinematic 70° low angle
-      bearing: 0,
-      antialias: false, // Saves 30% GPU load
-      dragPan: false,    // Map stays locked to player (cannot scroll away)
-      dragRotate: true,
-      touchZoomRotate: true,
-      touchPitch: true,  // Enables native 2-finger vertical swipe to tilt camera angle!
-      fadeDuration: 0, // Eliminates expensive GPU alpha-blending on tile loads
-      canvasContextAttributes: { antialias: false, powerPreference: "low-power" } // Routes graphics through mobile energy-efficiency cores
-    });
-
-    // Multi-touch Controller: 1-finger orbit & 2-finger pitch/zoom
-    let lastTouchX = 0;
-    const canvas = map.getCanvas();
-
-    canvas.addEventListener("touchstart", (e) => {
-      isUserInteracting = true;
-      if (e.touches.length === 1) {
-        isOrbiting = true;
-        lastTouchX = e.touches[0].clientX;
-      } else {
-        // 2 fingers on screen: Hand control directly to MapLibre for vertical pitch & pinch-zoom
-        isOrbiting = false;
-      }
-    }, { passive: true });
-
-    canvas.addEventListener("touchmove", (e) => {
-      // 1-finger horizontal swipe rotates camera around player
-      if (isOrbiting && e.touches.length === 1) {
-        const deltaX = e.touches[0].clientX - lastTouchX;
-        lastTouchX = e.touches[0].clientX;
-        map.setBearing(map.getBearing() + deltaX * 0.45);
-      }
-    }, { passive: true });
-
-    canvas.addEventListener("touchend", () => {
-      isOrbiting = false;
-      // Grace period before GPS auto-follow resumes
-      setTimeout(() => { isUserInteracting = false; }, 350);
-    });
-
-    // Re-lock center strictly when gestures finish (never interrupts animations mid-flight)
-    map.on("zoomend", () => {
-      if (currentPos) map.setCenter([currentPos.lon, currentPos.lat]);
-    });
-
-    // --- Instant Identity Recovery (Pulls Name & Photo from your 25 plots) ---
-    const state = Store.get();
-    if (state && state.player && (!state.player.name || state.player.name === "Traveler")) {
-      const allPlots = (typeof Grid !== "undefined" && Grid.getAllPlots) ? Grid.getAllPlots() : (state.plots || {});
-      for (const id in allPlots) {
-        const p = allPlots[id];
-        if (p.ownerId === state.player.id && p.ownerName && p.ownerName !== "Traveler") {
-          state.player.name = p.ownerName;
-          if (p.avatar && p.avatar !== "🙂") state.player.avatar = p.avatar;
-          console.log(`[Main] Restored player identity: ${state.player.name}`);
-          Store.save();
-          break;
-        }
-      }
-    }
-    
-    function setupGameLayers() {
-      if (!map || !map.getStyle()) return;
-
-      // 2. Add True 3D Extruded Buildings (if source exists)
-      try {
-        const layers = map.getStyle().layers || [];
-        const labelLayerId = layers.find(l => l.type === "symbol" && l.layout && l.layout["text-field"])?.id;
-
-        if (!map.getLayer("3d-buildings") && (map.getSource("composite") || map.getSource("openmaptiles"))) {
-          const buildingSource = map.getSource("composite") ? "composite" : "openmaptiles";
-          map.addLayer({
-            id: "3d-buildings",
-            source: buildingSource,
-            "source-layer": "building",
-            filter: ["==", "extrude", "true"],
-            type: "fill-extrusion",
-            minzoom: 15,
-            paint: {
-              "fill-extrusion-color": "#182232",
-              "fill-extrusion-height": ["get", "height"],
-              "fill-extrusion-base": ["get", "min_height"],
-              "fill-extrusion-opacity": 0.85,
-            },
-          }, labelLayerId);
-        }
-      } catch (err) {
-        console.log("[MapEngine] 3D buildings setup note:", err);
-      }
-
-      // 3. Mount 3D Animated Character
-      Character3D.init(map, currentPos.lon, currentPos.lat);
-
-      // 3.2. Initialize 3D Standing Foliage Engine
-      if (typeof Foliage !== "undefined") {
-        Foliage.init(map);
-      }
-      
-      // 3.5. Mount 3D Ground Sonar Layer (Locked to exact real-world meters)
-      const radiusM = CONFIG.DIAMOND_COLLECT_RADIUS_METERS || 100;
-      const initialRing = Geo.createCirclePolygon(currentPos.lat, currentPos.lon, radiusM);
-
-      if (!map.getSource("player-sonar-source")) {
-        map.addSource("player-sonar-source", {
-          type: "geojson",
-          data: {
-            type: "FeatureCollection",
-            features: [
-              {
-                type: "Feature",
-                properties: { type: "boundary" },
-                geometry: { type: "Polygon", coordinates: [initialRing] }
-              },
-              {
-                type: "Feature",
-                properties: { type: "center" },
-                geometry: { type: "Point", coordinates: [currentPos.lon, currentPos.lat] }
-              }
-            ]
-          }
-        });
-
-        map.addLayer({
-          id: "player-sonar-fill",
-          type: "fill",
-          source: "player-sonar-source",
-          filter: ["==", ["get", "type"], "boundary"],
-          paint: {
-            "fill-color": "#4fd6c4",
-            "fill-opacity": 0.05
-          }
-        });
-
-        map.addSource("player-wave-source", {
-          type: "geojson",
-          data: { type: "FeatureCollection", features: [] }
-        });
-
-        map.addLayer({
-          id: "player-wave-fill",
-          type: "fill",
-          source: "player-wave-source",
-          paint: {
-            "fill-color": "#4fd6c4",
-            "fill-opacity": 0.12
-          }
-        });
-
-        map.addLayer({
-          id: "player-wave-line",
-          type: "line",
-          source: "player-wave-source",
-          paint: {
-            "line-color": "#4fd6c4",
-            "line-width": 2,
-            "line-opacity": 0.6
-          }
-        });
-
-        map.addLayer({
-          id: "player-sonar-line",
-          type: "line",
-          source: "player-sonar-source",
-          paint: {
-            "line-color": "#4fd6c4",
-            "line-width": 2,
-            "line-dasharray": [3, 2],
-            "line-opacity": 0.85
-          }
-        });
-      }
-
-      // 4. Initialize Core Game Subsystems
-      Grid.init(map, {
-        onBuyAttempt: (success, rarity) => {
-          if (success) {
-            showToast(`Claimed a ${rarity.label} plot!`);
-            updateTopbar();
-            updateLandModal();
-          } else {
-            showToast(`You need ${CONFIG.PLOT_COST_EB} EB to claim this tile.`);
-          }
-        },
-      });
-      Grid.render();
-
-      Diamonds.init(map, {
-        onCollect: () => { updateTopbar(); showToast("Found a diamond! ◆ +1"); },
-        onDenied: () => showToast("Too far — walk closer to collect it."),
-      });
-      Diamonds.setPlayerPosition(currentPos.lat, currentPos.lon);
-    }
-
-    map.on("load", () => {
-      setupGameLayers();
-    });
-
-    Wheel.init();
-    if (typeof Feed !== "undefined") Feed.init();
-    if (typeof Leaderboard !== "undefined") Leaderboard.init();
-    if (typeof Chat !== "undefined") Chat.init();
-    if (typeof Citadels !== "undefined") {
-      Citadels.init(map);
-      Citadels.setPlayerPosition(currentPos.lat, currentPos.lon); // Immediate GPS sync on boot!
-    }
-    if (typeof WeeklyPool !== "undefined") WeeklyPool.init();
-    startIncomeLoop();
-    wireUI();
-
-    // --- Battery Saver & Background Sleep Controller (0% Battery in Pocket) ---
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) {
-        // Phone screen locked or app backgrounded -> Put game to complete sleep!
-        console.log("[Power] Screen locked/backgrounded — Game asleep (0% GPU/CPU).");
-      } else {
-        // Phone unlocked -> Wake up & calculate accrued offline rent in 0ms!
-        console.log("[Power] Screen active — Game resumed.");
-        Store.applyOfflineProgress();
-        updateTopbar();
-        if (typeof Leaderboard !== "undefined" && Leaderboard.fetchRankings) {
-          Leaderboard.fetchRankings(true);
-        }
-      }
-    });
+  for (const e of spawner.enemies) {
+    if (e.dead) continue;
+    const p = w2m(e.x, e.y);
+    if (p.x < 0 || p.x >= WORLD_MAP_SIZE || p.y < 0 || p.y >= WORLD_MAP_SIZE) continue;
+    ctx.fillStyle = e.stats.isElite ? '#d08bff' : '#e05a4e';
+    ctx.fillRect(Math.round(p.x) - 2, Math.round(p.y) - 2, 5, 5);
   }
 
-  function startIncomeLoop() {
-    const earned = Store.applyOfflineProgress();
-    const state = Store.get();
-    const pName = (state?.player?.name || "").toLowerCase();
-
-    // 🎁 Community MVP Gift for Cwood (500 EB One-Time Permanent Claim)
-    if (pName.includes("cwood") && !state.communityGiftClaimedV1) {
-      state.communityGiftClaimedV1 = true;
-      state.eb = (Number(state.eb) || 0) + 500;
-      Store.save(true); // Persist immediately to Google Cloud
-      setTimeout(() => {
-        showToast("🎁 Community MVP Gift! +500 EB credited for day-one feedback & testing!", 6000);
-      }, 2000);
-    } else if (earned > 0.000000000000001) {
-      showToast(`Welcome back — earned $${earned.toFixed(8)} while away.`);
-    }
-
-    updateTopbar();
-
-    // High-Performance Ticker: Calculates exact delta & saves locally without network thrashing
-    let lastTickTime = Date.now();
-    setInterval(() => {
-      if (document.hidden) return; // Sleep income ticker calculations when app is minimized
-
-      if (typeof Citadels !== "undefined") Citadels.checkCapsuleUnlock();
-      const now = Date.now();
-      const deltaSec = (now - lastTickTime) / 1000;
-      lastTickTime = now;
-
-      const state = Store.get();
-      if (state.cash === undefined) state.cash = 0;
-      if (state.lifetimeRent === undefined) state.lifetimeRent = state.cash;
-
-      const deltaEarned = Store.totalRate() * deltaSec;
-      state.cash += deltaEarned;
-      state.lifetimeRent += deltaEarned;
-      state.lastTick = now;
-      
-      Store.save(false); // Local save only (debounced cloud sync)
-      updateTopbar();
-    }, 1000);
+  for (const c of spawner.caches) {
+    if (c.opened) continue;
+    const p = w2m(c.x, c.y);
+    if (p.x < 0 || p.x >= WORLD_MAP_SIZE || p.y < 0 || p.y >= WORLD_MAP_SIZE) continue;
+    ctx.fillStyle = '#6ad8e0';
+    ctx.fillRect(Math.round(p.x) - 2, Math.round(p.y) - 2, 5, 5);
   }
 
-  // ---------------- UI wiring ----------------
-  function wireUI() {
-    window.addEventListener("openPlayerInfo", (e) => {       const cluster = e.detail?.cluster;       updatePlayerInfoModal(cluster ? cluster[0] : null);       openModal("player-info-modal");     });
+  // Visible-area rectangle
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 6]);
+  const vw = camera.viewW / WORLD_MAP_STEP;
+  const vh = camera.viewH / WORLD_MAP_STEP;
+  ctx.strokeRect(half - vw / 2, half - vh / 2, vw, vh);
+  ctx.setLineDash([]);
 
-    // --- Flying 3D Gem Arc Particle to HUD ---
-    function spawnFlyingGemToHUD(startX, startY) {
-      launchFlyingGemStream(startX, startY, 1);
-    }
-
-    // --- Multi-Gem Flying Diamond Stream Launcher ---
-    function launchFlyingGemStream(startX, startY, count) {
-      const targetEl = el("stat-diamonds");
-      if (!targetEl) return;
-
-      const targetBounds = targetEl.getBoundingClientRect();
-      const endX = targetBounds.left + targetBounds.width / 2;
-      const endY = targetBounds.top + targetBounds.height / 2;
-
-      const particleCount = Math.min(25, Math.max(1, count));
-
-      for (let i = 0; i < particleCount; i++) {
-        setTimeout(() => {
-          const spreadX = (Math.random() - 0.5) * 80;
-          const spreadY = (Math.random() - 0.5) * 50;
-
-          const gem = document.createElement("div");
-          gem.className = "flying-3d-gem";
-          gem.style.left = `${startX + spreadX}px`;
-          gem.style.top = `${startY + spreadY}px`;
-          gem.innerHTML = `
-            <svg viewBox="0 0 32 38">
-              <polygon points="16,2 29,12 16,16 3,12" fill="#a8f5ec"/>
-              <polygon points="3,12 16,16 16,36" fill="#1d7a6e"/>
-              <polygon points="29,12 16,16 16,36" fill="#4fd6c4"/>
-              <polygon points="16,2 20,8 16,16 12,8" fill="#ffffff"/>
-            </svg>
-          `;
-          document.body.appendChild(gem);
-
-          requestAnimationFrame(() => {
-            const dx = endX - (startX + spreadX);
-            const dy = endY - (startY + spreadY);
-            gem.style.transform = `translate(${dx}px, ${dy}px) scale(0.4) rotate(${Math.random() * 360}deg)`;
-            gem.style.opacity = "0.2";
-          });
-
-          setTimeout(() => {
-            gem.remove();
-            targetEl.classList.remove("hud-impact-bump");
-            void targetEl.offsetWidth;
-            targetEl.classList.add("hud-impact-bump");
-          }, 750);
-        }, i * (count > 5 ? 40 : 80));
-      }
-    }
-
-    // --- Multi-Particle Flying EB Stream Launcher ---
-    function launchFlyingEBStream(startX, startY, totalAmount) {
-      const targetEl = el("stat-eb");
-      if (!targetEl) return;
-
-      const targetBounds = targetEl.getBoundingClientRect();
-      const endX = targetBounds.left + targetBounds.width / 2;
-      const endY = targetBounds.top + targetBounds.height / 2;
-
-      // Launch individual particles up to total amount (max 50)
-      const particleCount = Math.min(50, totalAmount);
-      const isJackpot = totalAmount >= 25;
-
-      for (let i = 0; i < particleCount; i++) {
-        // Stagger each particle slightly in time & random burst spread
-        setTimeout(() => {
-          const eb = document.createElement("div");
-          eb.className = "flying-eb-coin" + (isJackpot ? " jackpot-spark" : "");
-          
-          // Random burst jitter from origin
-          const spreadX = (Math.random() - 0.5) * (isJackpot ? 120 : 60);
-          const spreadY = (Math.random() - 0.5) * (isJackpot ? 120 : 60);
-          eb.style.left = `${startX + spreadX}px`;
-          eb.style.top = `${startY + spreadY}px`;
-          eb.innerHTML = isJackpot ? `<span>⚡</span>` : `<span>EB</span>`;
-          document.body.appendChild(eb);
-
-          requestAnimationFrame(() => {
-            const dx = endX - (startX + spreadX);
-            const dy = endY - (startY + spreadY);
-            eb.style.transform = `translate(${dx}px, ${dy}px) scale(0.45) rotate(${Math.random() * 360}deg)`;
-            eb.style.opacity = "0.15";
-          });
-
-          setTimeout(() => {
-            eb.remove();
-            targetEl.classList.remove("hud-impact-bump");
-            void targetEl.offsetWidth;
-            targetEl.classList.add("hud-impact-bump");
-          }, 750);
-        }, i * (totalAmount > 10 ? 25 : 80)); // Fast machine-gun cascade for 50 EB
-      }
-    }
-
-    // --- 30-Day Daily Login Calendar System (Tamper-Proof 20-Hour Cooldown) ---
-    function getCalendarState() {
-      const state = Store.get();
-      if (!state.calendar) {
-        state.calendar = {
-          claimedDays: 0,       // Exact count of days claimed (0 to 30)
-          lastClaimTime: 0,     // Timestamp of last claim
-          lastClaimDate: null   // Legacy migration support
-        };
-      }
-      // Migrate legacy formats
-      if (state.calendar.currentDay !== undefined && state.calendar.claimedDays === undefined) {
-        state.calendar.claimedDays = Math.max(0, state.calendar.currentDay - 1);
-        delete state.calendar.currentDay;
-      }
-      // Migrate old date-string format to timestamp if present
-      if (state.calendar.lastClaimDate && !state.calendar.lastClaimTime) {
-        state.calendar.lastClaimTime = new Date(state.calendar.lastClaimDate).getTime() || Date.now();
-      }
-      return state.calendar;
-    }
-
-    function isRewardReady() {
-      const cal = getCalendarState();
-      if (!cal.lastClaimTime) return true;
-      const HOURS_20 = 20 * 3600 * 1000; // 20 hours minimum between claims
-      return (Date.now() - cal.lastClaimTime) >= HOURS_20;
-    }
-
-    function updateCalendarHUD() {
-      const cal = getCalendarState();
-      const ready = isRewardReady();
-
-      const now = new Date();
-      const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-      if (el("cal-hud-month")) el("cal-hud-month").textContent = months[now.getMonth()];
-      if (el("cal-hud-day")) el("cal-hud-day").textContent = now.getDate();
-
-      const unreadDot = el("calendar-unread-dot");
-      if (unreadDot) {
-        if (ready && (cal.claimedDays || 0) < 30) {
-          unreadDot.classList.remove("hidden");
-        } else {
-          unreadDot.classList.add("hidden");
+  // Quest objective highlight — travel targets get a pulsing ring on the map
+  if (quests.currentMain) {
+    for (const obj of quests.currentMain.objectives) {
+      if (obj.type === 'travel' && !obj.done) {
+        const target = obj.target === 'side_npc' ? sideNPC : null;
+        if (target) {
+          const tp = w2m(target.x, target.y);
+          ctx.strokeStyle = 'rgba(138,176,233,0.7)';
+          ctx.lineWidth = 2.5;
+          ctx.setLineDash([5, 4]);
+          ctx.beginPath();
+          ctx.arc(tp.x, tp.y, 14, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = 'rgba(138,176,233,0.25)';
+          ctx.beginPath();
+          ctx.arc(tp.x, tp.y, 14, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#8ab0e9';
+          ctx.font = 'bold 10px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.shadowColor = '#000';
+          ctx.shadowBlur = 4;
+          const distTiles = Math.round(Math.hypot(target.x - player.x, target.y - player.y) / TILE);
+          ctx.fillText(`Quest target · ${distTiles} tiles away`, tp.x, tp.y - 20);
+          ctx.shadowBlur = 0;
         }
       }
     }
-
-    function renderCalendarModal() {
-      const list = el("calendar-days-list");
-      if (!list) return;
-      list.innerHTML = "";
-
-      const cal = getCalendarState();
-      const ready = isRewardReady();
-      const claimedCount = cal.claimedDays || 0;
-      const rewards = CONFIG.DAILY_CALENDAR_REWARDS || [];
-
-      rewards.forEach((r) => {
-        const dayNum = r.day;
-        const isAlreadyClaimed = dayNum <= claimedCount;
-        const isReadyToClaim = (dayNum === claimedCount + 1) && ready;
-        const isLockedTomorrow = (dayNum === claimedCount + 1) && !ready;
-        const isFutureLocked = dayNum > claimedCount + 1;
-
-        // Check if day has diamonds
-        const diamondText = r.diamonds ? ` & +${r.diamonds} ◆` : "";
-        const rewardLabel = `+${r.eb} EB${diamondText}`;
-
-        const row = document.createElement("div");
-        row.className = "cal-day-row" + (isReadyToClaim ? " active" : "") + (isAlreadyClaimed ? " claimed" : "") + (isLockedTomorrow || isFutureLocked ? " locked" : "");
-
-        let actionHtml = "";
-        if (isAlreadyClaimed) {
-          actionHtml = `<span class="cal-status-claimed">✓ Claimed</span>`;
-        } else if (isReadyToClaim) {
-          actionHtml = `<button class="cal-claim-btn" id="claim-day-${dayNum}">Claim ${rewardLabel}</button>`;
-        } else if (isLockedTomorrow) {
-          const remainingMs = Math.max(0, (cal.lastClaimTime + (20 * 3600 * 1000)) - Date.now());
-          const remHrs = Math.floor(remainingMs / 3600000);
-          const remMins = Math.floor((remainingMs % 3600000) / 60000);
-          actionHtml = `<span class="cal-status-locked" style="color:var(--teal);opacity:0.85;">⏳ ${remHrs}h ${remMins}m</span>`;
-        } else {
-          actionHtml = `<span class="cal-status-locked">🔒 Day ${dayNum}</span>`;
-        }
-
-        row.innerHTML = `
-          <div class="cal-day-left">
-            <span class="cal-day-badge">Day ${dayNum}</span>
-            <span class="cal-reward-amount">${rewardLabel}</span>
-          </div>
-          <div class="cal-day-right">
-            ${actionHtml}
-          </div>
-        `;
-
-        list.appendChild(row);
-
-        if (isReadyToClaim) {
-          const claimBtn = row.querySelector(".cal-claim-btn");
-          claimBtn?.addEventListener("click", () => {
-            const rect = claimBtn.getBoundingClientRect();
-            claimDailyReward(r.eb, r.diamonds || 0, rect.left + rect.width / 2, rect.top + rect.height / 2);
-          });
-        }
-      });
-    }
-
-    function claimDailyReward(ebAmount, diamondAmount, clickX, clickY) {
-      const state = Store.get();
-      const cal = getCalendarState();
-
-      if (!isRewardReady()) return; // Strict 20h cooldown guard
-
-      cal.lastClaimTime = Date.now();
-      cal.claimedDays = Math.min(30, (cal.claimedDays || 0) + 1);
-
-      // Add EB and Diamonds to player account
-      state.eb = (Number(state.eb) || 0) + ebAmount;
-      if (diamondAmount > 0) {
-        state.diamonds = (Number(state.diamonds) || 0) + diamondAmount;
-      }
-      Store.save(true); // Forces immediate sync
-      updateTopbar();
-      updateCalendarHUD();
-
-      // Trigger visual particles
-      launchFlyingEBStream(clickX, clickY, ebAmount);
-      if (diamondAmount > 0) {
-        setTimeout(() => launchFlyingGemStream(clickX, clickY, diamondAmount), 300);
-      }
-      
-      const diaToast = diamondAmount > 0 ? ` & +${diamondAmount} Diamonds` : "";
-      showToast(`🎉 Claimed +${ebAmount} EB${diaToast} Daily Reward!`);
-
-      // Broadcast login streak
-      if (typeof Feed !== "undefined") {
-        Feed.broadcast("daily", { day: cal.claimedDays });
-      }
-
-      // Re-render modal to show "✓ Claimed" and countdown
-      renderCalendarModal();
-
-      setTimeout(() => {
-        closeModal("calendar-modal");
-      }, 650);
-    }
-    
-    el("calendar-btn")?.addEventListener("click", () => {
-      renderCalendarModal();
-      openModal("calendar-modal");
-    });
-
-    updateCalendarHUD();
-
-    // --- 3D Character Wardrobe Selector ---
-    function renderWardrobe() {
-      const grid = el("wardrobe-grid");
-      if (!grid) return;
-      grid.innerHTML = "";
-
-      const state = Store.get();
-      const currentModelId = state?.player?.model3d || "soldier";
-      const characters = CONFIG.AVAILABLE_CHARACTERS || [];
-
-      characters.forEach((char) => {
-        const isSelected = char.id === currentModelId;
-        const card = document.createElement("div");
-        card.className = "wardrobe-card" + (isSelected ? " selected" : "");
-        card.innerHTML = `
-          <span class="char-icon">${char.icon || "👤"}</span>
-          <span class="char-name">${char.name}</span>
-          <span class="char-status">${isSelected ? "EQUIPPED" : "Equip"}</span>
-        `;
-
-        card.addEventListener("click", () => {
-          if (typeof Character3D !== "undefined" && Character3D.changeCharacter) {
-            Character3D.changeCharacter(char.id);
-            showToast(`Equipped ${char.name}!`);
-          }
-          closeModal("wardrobe-modal");
-          updatePlayerInfoModal();
-        });
-
-        grid.appendChild(card);
-      });
-    }
-
-    // Open Wardrobe on Avatar Pencil Tap
-    el("edit-avatar-btn")?.addEventListener("click", () => {
-      renderWardrobe();
-      openModal("wardrobe-modal");
-    });
-
-    // Rename Player on Name Pencil Tap
-    el("edit-name-btn")?.addEventListener("click", async () => {
-      const state = Store.get();
-      const currentName = state?.player?.name || "Traveler";
-      const newName = prompt("Choose your realm name (2–16 characters):", currentName);
-
-      if (!newName) return;
-      const cleanName = newName.trim().slice(0, 16);
-      if (cleanName.length < 2 || cleanName === currentName) return;
-
-      // 1. Update local state & HUD
-      state.player.name = cleanName;
-      Store.save();
-      updateTopbar();
-      updatePlayerInfoModal();
-      showToast(`Name updated to "${cleanName}"!`);
-
-      // 2. Broadcast name change to all owned plots in Firestore so other players see it
-      const db = Store.getDb();
-      if (db && state.player.id) {
-        try {
-          const batch = db.batch();
-          const snap = await db.collection("plots").where("ownerId", "==", state.player.id).get();
-          snap.forEach((doc) => {
-            batch.update(doc.ref, { ownerName: cleanName });
-          });
-          await batch.commit();
-
-          // Also update Grid memory locally
-          if (typeof Grid !== "undefined" && Grid.render) {
-            for (const tid in state.plots) {
-              if (state.plots[tid].ownerId === state.player.id) {
-                state.plots[tid].ownerName = cleanName;
-              }
-            }
-            Grid.render();
-          }
-          console.log(`[Multiplayer] Successfully updated ownerName on ${snap.size} plots to "${cleanName}".`);
-        } catch (err) {
-          console.warn("[Multiplayer] Error updating name across plots:", err);
-        }
-      }
-    });
-    // --- Diamond Extractor Dynamic Level Math (2-min base, up to 50 gems) ---
-    function getExtractorStats(level = 1) {
-      const baseInterval = CONFIG.EXTRACTOR_INTERVAL_MS || 600000; // 10 mins (600,000ms)
-      const timeUpgrades = Math.floor((level - 1) / 2);
-      const storageUpgrades = Math.floor(level / 2);
-
-      // 0.0001% safe time reduction per time upgrade
-      const interval = baseInterval * Math.pow(1 - 0.000001, timeUpgrades);
-      const maxStored = (CONFIG.EXTRACTOR_MAX_STORED || 50) + storageUpgrades;
-      const nextCost = level * 1.0; // $1.00, $2.00, $3.00...
-      const nextIsCapacity = level % 2 === 1;
-
-      return { interval, maxStored, nextCost, nextIsCapacity };
-    }
-
-    function checkExtractorTick() {
-      if (document.hidden) return; // Battery Saver: 0% CPU while phone in pocket
-
-      const state = Store.get();
-      if (!state.extractor) state.extractor = { built: false, level: 1, lastHarvest: Date.now(), stored: 0 };
-      if (!state.extractor.built) return;
-
-      const lvl = state.extractor.level || 1;
-      const { interval, maxStored, nextCost, nextIsCapacity } = getExtractorStats(lvl);
-
-      const now = Date.now();
-      const timeSince = now - state.extractor.lastHarvest;
-      const readyCount = Math.floor(timeSince / interval);
-
-      if (readyCount > 0 && state.extractor.stored < maxStored) {
-        state.extractor.stored = Math.min(maxStored, state.extractor.stored + readyCount);
-        state.extractor.lastHarvest = now - (timeSince % interval);
-        Store.save();
-      }
-
-      // Live UI Updates
-      const remainingMs = Math.max(0, interval - (now - state.extractor.lastHarvest));
-      const hrs = Math.floor(remainingMs / 3600000);
-      const mins = Math.floor((remainingMs % 3600000) / 60000);
-      const secs = Math.floor((remainingMs % 60000) / 1000);
-
-      if (el("extractor-lvl-badge")) el("extractor-lvl-badge").textContent = `Level ${lvl}`;
-      if (el("extractor-next-timer")) el("extractor-next-timer").textContent = `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-      if (el("extractor-stored-count")) el("extractor-stored-count").innerHTML = `${state.extractor.stored} / ${maxStored} <span class="hud-gem-icon"></span>`;
-      if (el("extractor-next-perk")) el("extractor-next-perk").textContent = nextIsCapacity ? "Next: +1 Max Diamond Capacity" : "Next: -0.0001% Mining Time";
-      
-      // $1.00 Unlock Condition Check
-      const upgradeBtn = el("upgrade-extractor-btn");
-      const lockNotice = el("extractor-locked-notice");
-      const hasReachedOneDollar = (Number(state.cash) || 0) >= 1.00 || lvl > 1;
-
-      if (upgradeBtn && lockNotice) {
-        if (hasReachedOneDollar) {
-          upgradeBtn.style.display = "block";
-          upgradeBtn.textContent = `⚡ Upgrade ($${nextCost.toFixed(2)})`;
-          lockNotice.classList.add("hidden");
-        } else {
-          upgradeBtn.style.display = "none";
-          lockNotice.classList.remove("hidden");
-        }
-      }
-
-      if (el("collect-extractor-btn")) {
-        el("collect-extractor-btn").innerHTML = `Collect All (${state.extractor.stored} <span class="hud-gem-icon"></span>)`;
-        el("collect-extractor-btn").disabled = state.extractor.stored === 0;
-      }
-
-      // Live Update Extractor Side HUD Button & Red Notification Dot
-      const extractorHudBtn = el("extractor-hud-btn");
-      const extractorRedDot = el("extractor-unread-dot");
-
-      if (extractorHudBtn) {
-        if (state.extractor.built) {
-          extractorHudBtn.classList.remove("hidden");
-          if (extractorRedDot) {
-            if (state.extractor.stored > 0) {
-              extractorRedDot.classList.remove("hidden");
-            } else {
-              extractorRedDot.classList.add("hidden");
-            }
-          }
-        } else {
-          extractorHudBtn.classList.add("hidden");
-        }
-      }
-    }
-
-    function openExtractorModal() {
-      const state = Store.get();
-      if (!state.extractor) state.extractor = { built: false, lastHarvest: Date.now(), stored: 0 };
-
-      if (!state.extractor.built) {
-        el("extractor-unbuilt-view")?.classList.remove("hidden");
-        el("extractor-active-view")?.classList.add("hidden");
-      } else {
-        el("extractor-unbuilt-view")?.classList.add("hidden");
-        el("extractor-active-view")?.classList.remove("hidden");
-        checkExtractorTick();
-      }
-      openModal("extractor-modal");
-    }
-
-    window.addEventListener("openExtractorModal", openExtractorModal);
-
-    // Tap Quick Extractor Button to Open Modal
-    el("extractor-hud-btn")?.addEventListener("click", openExtractorModal);
-
-    // Upgrade Extractor Button (Spends Cash Balance)
-    el("upgrade-extractor-btn")?.addEventListener("click", () => {
-      const state = Store.get();
-      if (!state.extractor || !state.extractor.built) return;
-
-      const lvl = state.extractor.level || 1;
-      const { nextCost } = getExtractorStats(lvl);
-
-      if ((state.cash || 0) < nextCost) {
-        showToast(`You need $${nextCost.toFixed(2)} in Cash Balance to upgrade.`);
-        return;
-      }
-
-      state.cash -= nextCost;
-      state.extractor.level = lvl + 1;
-      Store.save();
-      updateTopbar();
-      showToast(`⚡ Extractor Upgraded to Level ${lvl + 1}!`);
-      checkExtractorTick();
-    });
-
-    // Build Extractor Button
-    el("build-extractor-btn")?.addEventListener("click", () => {
-      const state = Store.get();
-      const cost = CONFIG.EXTRACTOR_BUILD_COST_EB || 50;
-      if (state.eb < cost) {
-        showToast(`You need ${cost} EB to construct the Extractor.`);
-        return;
-      }
-      state.eb -= cost;
-      if (!state.extractor) state.extractor = { level: 1 };
-      state.extractor.built = true;
-      state.extractor.level = 1;
-      state.extractor.lastHarvest = Date.now();
-      state.extractor.stored = 0;
-      Store.save();
-      updateTopbar();
-
-      // Immediately render 3D Extractor Beacon on map
-      if (typeof Grid !== "undefined" && Grid.render) {
-        Grid.render();
-      }
-
-      showToast("💎 Diamond Extractor Constructed!");
-      openExtractorModal();
-    });
-
-    // Collect Diamonds Button with Multi-Gem Particle Shower & Auto-Close
-    const collectExtBtn = el("collect-extractor-btn");
-    if (collectExtBtn) {
-      collectExtBtn.addEventListener("click", (e) => {
-        const state = Store.get();
-        if (!state.extractor || state.extractor.stored <= 0) return;
-
-        const count = state.extractor.stored;
-        const rect = collectExtBtn.getBoundingClientRect();
-        const originX = rect.left + rect.width / 2;
-        const originY = rect.top + rect.height / 2;
-
-        state.diamonds = (Number(state.diamonds) || 0) + count;
-        state.extractor.stored = 0;
-        Store.save();
-        updateTopbar();
-        showToast(`💎 Collected ${count} Diamond${count > 1 ? "s" : ""} from Extractor!`);
-        checkExtractorTick();
-
-        // Launch flying diamonds straight into top HUD Diamonds counter!
-        launchFlyingGemStream(originX, originY, count);
-
-        // Auto-close Extractor modal after short celebration delay
-        setTimeout(() => {
-          closeModal("extractor-modal");
-        }, 250);
-      });
-    }
-
-    // Check extractor every 2 seconds
-    setInterval(checkExtractorTick, 2000);
-    // --- Global Multiplier 3-Day Cycle Wiring ---
-    const multBtn = el("multiplier-btn");
-    const activateBoostBtn = el("activate-boost-btn");
-
-    function isGlobal50XActiveNow() {
-      const now = Date.now();
-      const ANCHOR = 1788912000000;
-      const EVENT_24H = 24 * 3600 * 1000;
-      const TOTAL_CYCLE = 24 * 3600 * 1000 + 3 * 24 * 3600 * 1000; // 24h event + 72h cooldown
-      let elapsed = (now - ANCHOR) % TOTAL_CYCLE;
-      if (elapsed < 0) elapsed += TOTAL_CYCLE;
-      return elapsed < EVENT_24H;
-    }
-
-    if (multBtn) {
-      multBtn.addEventListener("click", () => {
-        const is50X = isGlobal50XActiveNow();
-        const targetMult = is50X ? 50 : 30;
-        el("mult-label").textContent = targetMult + "X";
-        el("booster-modal-title").textContent = is50X ? "🔥 Activate 50X Super Boost" : "Activate 30X Boost";
-        el("modal-mult-rate").textContent = `${targetMult}X Income`;
-        openModal("booster-modal");
-      });
-    }
-
-    if (activateBoostBtn) {
-      activateBoostBtn.addEventListener("click", () => {
-        const state = Store.get();
-        const now = Date.now();
-        const oneHour = 3600 * 1000;
-        const sixHours = 6 * 3600 * 1000;
-        const is50X = isGlobal50XActiveNow();
-        const activeMult = is50X ? 50 : 30;
-
-        // Stack time up to 6 hours max
-        const currentRemaining = Math.max(0, (state.boostExpiry || 0) - now);
-        const newRemaining = Math.min(sixHours, currentRemaining + oneHour);
-
-        state.boostExpiry = now + newRemaining;
-        state.boostMultiplier = activeMult;
-        Store.save();
-
-        closeModal("booster-modal");
-        updateTopbar();
-        const icon = activeMult === 50 ? "🔥" : "⚡";
-        showToast(`${icon} ${activeMult}X Multiplier Activated! (+1 Hr)`);
-      });
-    }
-    
-    // --- Floating +2 EB Boost Loop (20-Minute Cooldown & Bot Protection) ---
-    const boostBtn = el("boost-btn");
-    let boostHideTimer = null;
-    let boostScheduleTimer = null;
-    const BOOST_COOLDOWN_MS = 20 * 60 * 1000; // Exactly 20 Minutes (1,200,000 ms)
-
-    function scheduleBoost() {
-      clearTimeout(boostScheduleTimer);
-      const state = Store.get();
-      const now = Date.now();
-      const lastClaim = state?.lastBoostClaim || 0;
-      const elapsed = now - lastClaim;
-
-      // Calculate remaining wait time (prevents multi-tab and refresh exploits)
-      const waitTime = Math.max(0, BOOST_COOLDOWN_MS - elapsed);
-
-      boostScheduleTimer = setTimeout(() => {
-        if (!boostBtn) return;
-        boostBtn.classList.remove("hidden");
-
-        // Stays visible for 45 seconds so human players have plenty of time to tap
-        boostHideTimer = setTimeout(() => {
-          boostBtn.classList.add("hidden");
-          scheduleBoost();
-        }, 45000);
-      }, waitTime);
-    }
-
-    if (boostBtn) {
-      boostBtn.addEventListener("click", (e) => {
-        const state = Store.get();
-        const now = Date.now();
-        const lastClaim = state?.lastBoostClaim || 0;
-
-        // Anti-Bot Guard: Rejects fraudulent clicks if 20 minutes have not elapsed
-        if (lastClaim && (now - lastClaim < BOOST_COOLDOWN_MS - 5000)) {
-          showToast("⏳ Cooldown active — boost available every 20 minutes.");
-          boostBtn.classList.add("hidden");
-          return;
-        }
-
-        clearTimeout(boostHideTimer);
-        const rect = boostBtn.getBoundingClientRect();
-        const originX = rect.left + rect.width / 2;
-        const originY = rect.top + rect.height / 2;
-        boostBtn.classList.add("hidden");
-
-        // Save timestamp to prevent multi-tab abuse
-        state.lastBoostClaim = now;
-        state.eb = (Number(state.eb) || 0) + 2;
-        Store.save();
-        updateTopbar();
-        showToast("⚡ Claimed +2.00 EB Boost! (Next in 20m)");
-
-        // Launch flying EB particle sparks into the HUD!
-        launchFlyingEBStream(originX, originY, 2);
-
-        // Schedule next 20-minute cycle
-        scheduleBoost();
-      });
-
-      // Start initial cooldown check
-      scheduleBoost();
-    }
-
-    // --- Smooth BUY LAND 2D Camera Transition ---
-    const buyLandBtn = el("buy-land-mode-btn");
-    const exitBuyBtn = el("exit-buy-mode-btn");
-    const buyBanner = el("buy-mode-banner");
-
-    function enterBuyLandMode() {
-      if (!map || !currentPos) return;
-      buyBanner?.classList.remove("hidden");
-      Grid.setBuyMode(true, currentPos);
-
-      // Smooth cinematic swoosh to top-down 2D
-      map.flyTo({
-        center: [currentPos.lon, currentPos.lat],
-        pitch: 0,       // Flat 2D top-down view
-        bearing: 0,     // Aligns to North
-        zoom: 19.2,
-        duration: 1000,
-        essential: true,
-      });
-    }
-
-    function exitBuyLandMode() {
-      if (!map || !currentPos) return;
-      buyBanner?.classList.add("hidden");
-      Grid.setBuyMode(false);
-
-      // Smooth return to 60° 3D Isometric View
-      map.flyTo({
-        center: [currentPos.lon, currentPos.lat],
-        pitch: 60,      // 60° 3D Isometric View
-        zoom: 18.5,
-        duration: 1000,
-        essential: true,
-      });
-    }
-
-    buyLandBtn?.addEventListener("click", enterBuyLandMode);
-    exitBuyBtn?.addEventListener("click", exitBuyLandMode);
-
-    // Reset Camera to True North & Default Zoom Level
-    el("recenter-btn")?.addEventListener("click", () => {
-      if (currentPos && map) {
-        map.flyTo({
-          center: [currentPos.lon, currentPos.lat],
-          bearing: 0,      // Snaps camera back to True North
-          pitch: 60,       // Resets to 3D Isometric View
-          zoom: 18.5,      // Returns to default sweetspot zoom
-          duration: 900,
-          essential: true,
-        });
-      }
-    });
-    
-    // Tap Balance or Profile Chip to open Player Info Modal
-    function openPlayerInfo() {
-      updatePlayerInfoModal();
-      openModal("player-info-modal");
-    }
-    el("hero-balance-card").addEventListener("click", openPlayerInfo);
-    document.querySelector(".player-chip")?.addEventListener("click", openPlayerInfo);
-    // Wire up Guest "Sign in with Google" button in Player Info Modal
-    document.getElementById("google-link-btn")?.addEventListener("click", () => {
-      closeModal("player-info-modal");
-      const signinScreen = document.getElementById("signin-screen");
-      if (signinScreen) {
-        // Force the sign-in screen to the absolute front
-        signinScreen.classList.remove("hidden");
-        signinScreen.style.display = "flex";
-        signinScreen.style.position = "fixed";
-        signinScreen.style.zIndex = "9999999";
-        signinScreen.style.opacity = "1";
-        console.log("[Auth] Re-opening Sign-In Screen for Guest Upgrade");
-      }
-    });
-
-    el("earn-btn").addEventListener("click", () => {
-      // Safety unlock in case modal was closed mid-spin
-      const spinBtn = el("spin-btn");
-      if (spinBtn && !el("wheel-result").textContent.includes("Spinning")) {
-        spinBtn.disabled = false;
-      }
-      openModal("wheel-modal");
-      updateTopbar();
-    });
-    el("land-btn").addEventListener("click", () => { updateLandModal(); openModal("land-modal"); });
-
-    // --- Tutorial Unread Alert Dot Logic ---
-    const menuDot = el("menu-unread-dot");
-    const TUTORIAL_KEY = "eldenEarth.tutorialViewed.v1";
-
-    // Show glowing red dot if player hasn't opened the updated guide yet
-    if (!localStorage.getItem(TUTORIAL_KEY) && menuDot) {
-      menuDot.classList.remove("hidden");
-    }
-
-    el("menu-btn").addEventListener("click", () => {
-      // Mark viewed & remove alert dot
-      localStorage.setItem(TUTORIAL_KEY, "true");
-      if (menuDot) menuDot.classList.add("hidden");
-      openModal("menu-modal");
-    });
-
-    // Wire Resume Session Button (Single Active Session Lock)
-    document.getElementById("resume-session-btn")?.addEventListener("click", () => {
-      if (typeof Store !== "undefined" && Store.resumeSession) {
-        Store.resumeSession();
-      }
-    });
-    
-    // --- Google AdSense Compliant 60-Second Treasury Ad Refresher ---
-    function initTreasuryAdRefresher() {
-      const adContainer = el("treasury-ad-container");
-      if (!adContainer) return;
-
-      const REFRESH_INTERVAL_MS = 60000; // Strictly 60-second compliant interval
-      let lastAdRefreshTime = Date.now();
-
-      function refreshAd() {
-        if (document.hidden) return; // Never refresh in background
-
-        try {
-          const ins = adContainer.querySelector("ins.adsbygoogle");
-          if (ins) {
-            // 1. Clear out Google's previous iframe
-            ins.innerHTML = "";
-            // 2. Remove status attribute so AdSense re-processes the slot cleanly (Prevents TagError)
-            ins.removeAttribute("data-adsbygoogle-status");
-          }
-          (window.adsbygoogle = window.adsbygoogle || []).push({});
-          lastAdRefreshTime = Date.now();
-          console.log("[AdSense] Refreshed bottom treasury banner successfully.");
-        } catch (e) {
-          console.warn("[AdSense] Refresh notice:", e);
-        }
-      }
-
-      // Initial push on game load
-      try {
-        (window.adsbygoogle = window.adsbygoogle || []).push({});
-      } catch (e) {}
-
-      // 60-Second Refresh Ticker
-      setInterval(() => {
-        const now = Date.now();
-        if (now - lastAdRefreshTime >= REFRESH_INTERVAL_MS) {
-          refreshAd();
-        }
-      }, REFRESH_INTERVAL_MS);
-
-      // Refresh when waking up if 60 seconds have elapsed
-      document.addEventListener("visibilitychange", () => {
-        if (!document.hidden && (Date.now() - lastAdRefreshTime >= REFRESH_INTERVAL_MS)) {
-          refreshAd();
-        }
-      });
-    }
-
-    initTreasuryAdRefresher();
-
-    // --- PWA Standalone Status Bar & Battery Guard for Fullscreen Ads ---
-    const adObserver = new MutationObserver(() => {
-      const overlays = document.querySelectorAll('body > div[style*="2147483647"], body > div[id*="aswift"]');
-      overlays.forEach(el => {
-        if (el.style.top !== "54px") {
-          el.style.setProperty("top", "max(54px, env(safe-area-inset-top))", "important");
-          el.style.setProperty("height", "calc(100vh - 54px)", "important");
-        }
-      });
-    });
-    adObserver.observe(document.body, { childList: true, subtree: false });
-
-    document.querySelectorAll("[data-close]").forEach(btn => {
-      btn.addEventListener("click", () => closeModal(btn.dataset.close));
-    });
-    document.querySelectorAll(".modal").forEach(modal => {
-      modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
-    });
-
-    el("spin-btn").addEventListener("click", () => {
-      const state = Store.get();
-      if (state.player.id && state.player.id.startsWith("guest-")) {
-        showToast("YOU ARE A GUEST IN THIS REALM. Sign in with Google to spin the wheel.");
-        return;
-      }
-      const cost = CONFIG.SPIN_COST_DIAMONDS || 1;
-
-      if ((Number(state.diamonds) || 0) < cost) {
-        showToast("Not enough diamonds — go find some!");
-        return;
-      }
-
-      state.diamonds = Math.max(0, (Number(state.diamonds) || 0) - cost);
-      Store.save();
-      updateTopbar();
-      el("spin-btn").disabled = true;
-      el("wheel-result").textContent = "Spinning...";
-
-      Wheel.spin((slice) => {
-        const s = Store.get();
-        if (!slice) return;
-
-        // Coordinates from the center of the wheel
-        const wheelEl = el("wheel-canvas");
-        const wRect = wheelEl ? wheelEl.getBoundingClientRect() : { left: window.innerWidth / 2, top: window.innerHeight / 2, width: 0, height: 0 };
-        const originX = wRect.left + wRect.width / 2;
-        const originY = wRect.top + wRect.height / 2;
-
-        if (slice.type === "diamond") {
-          s.diamonds = (Number(s.diamonds) || 0) + 1;
-          el("wheel-result").textContent = "Your diamond found its way back to you. (◆ +1)";
-          showToast("💎 +1 Diamond Refunded!");
-          spawnFlyingGemToHUD(originX, originY);
-
-        } else if (slice.type === "diamond_jackpot") {
-          // 💎 +12 or +24 Diamond Jackpot!
-          const winDiamonds = Number(slice.amount) || 12;
-          s.diamonds = (Number(s.diamonds) || 0) + winDiamonds;
-          el("wheel-result").textContent = `🎉 MEGA JACKPOT! +${winDiamonds} Diamonds!`;
-          showToast(`💎 MEGA JACKPOT! Won +${winDiamonds} Diamonds!`);
-
-          // Broadcast diamond jackpot to Feed
-          if (typeof Feed !== "undefined") {
-            Feed.broadcast("diamond_jackpot", { amount: winDiamonds });
-          }
-
-          launchFlyingGemStream(originX, originY, winDiamonds);
-
-        } else if (slice.type === "miss") {
-          el("wheel-result").textContent = "Better luck next time! (No reward)";
-          showToast("🚫 Nothing this time — keep searching!");
-
-        } else {
-          const winAmount = Number(slice.amount) || 0;
-          s.eb = (Number(s.eb) || 0) + winAmount;
-          el("wheel-result").textContent = `🎉 You won ${winAmount} EB!`;
-          showToast(`🎉 Won +${winAmount} Elden Bucks!`);
-
-          // Broadcast 25 EB or 50 EB Jackpots worldwide!
-          if (winAmount >= 25 && typeof Feed !== "undefined") {
-            Feed.broadcast("jackpot", { amount: winAmount });
-          }
-
-          launchFlyingEBStream(originX, originY, winAmount);
-        }
-
-        Store.save();
-        updateTopbar();
-        el("spin-btn").disabled = false;
-      });
-    });
-
-    el("reset-btn").addEventListener("click", () => {
-      if (confirm("This wipes all Elden Earth progress on this device. Continue?")) {
-        Store.reset();
-        location.reload();
-      }
-    });
   }
 
-  // ---------------- Boot ----------------
-  document.addEventListener("DOMContentLoaded", () => {
-    Store.load();
-    Auth.init(onSignedIn);
-    el("locate-btn")?.addEventListener("click", startLocating);
+  // Tile-position coordinates
+  document.getElementById('mapCoords').textContent =
+    `${Math.round(player.x / TILE)}, ${Math.round(player.y / TILE)}`;
+}
+
+// ---------------------------------------------------------------
+// INVENTORY UI
+// ---------------------------------------------------------------
+function openInventory(defaultTab) {
+  renderInventory();
+  openModal('inventoryModal');
+  if (defaultTab) {
+    document.querySelectorAll('.invTab').forEach(t => t.classList.toggle('active', t.dataset.tab === defaultTab));
+    document.querySelectorAll('.invPanel').forEach(p => p.classList.add('hidden'));
+    document.getElementById('invPanel' + capitalize(defaultTab)).classList.remove('hidden');
+  }
+}
+
+function renderInventory() {
+  renderItemsTab();
+  renderEquipTab();
+  renderQuestTab();
+}
+
+const RARITY_RANK = { legendary: 0, rare: 1, magic: 2, common: 3 };
+const TYPE_RANK = { consumable: 0, weapon: 1, armor: 2, material: 3, currency: 4 };
+const EQUIP_SLOT_NAMES = { weapon: 'Weapon', offhand: 'Offhand', chest: 'Chest', head: 'Head', ring: 'Ring', amulet: 'Amulet' };
+
+// ---------------- Items tab ----------------
+function renderItemsTab() {
+  const { inventory, survival } = state;
+  const panel = document.getElementById('invPanelItems');
+  panel.innerHTML = '';
+
+  const header = document.createElement('div');
+  header.className = 'invHeader';
+  header.innerHTML =
+    `<span class="goldWrap"><img src="assets/img/item_gold.png" alt="gold">${survival.gold} gold</span>` +
+    `<span>Bag ${inventory.slots.length}/${inventory.maxSlots}</span>`;
+  panel.appendChild(header);
+
+  if (!inventory.slots.length) {
+    const empty = document.createElement('div');
+    empty.className = 'invEmpty';
+    empty.textContent = 'Your bag is empty. Crack caches and hunt beasts to fill it.';
+    panel.appendChild(empty);
+    return;
+  }
+
+  const grid = document.createElement('div');
+  grid.className = 'itemGrid';
+  const view = inventory.slots.map((slot, i) => ({ slot, i }))
+    .sort((a, b) => {
+      const A = ITEMS[a.slot.item], B = ITEMS[b.slot.item];
+      return (TYPE_RANK[A.type] - TYPE_RANK[B.type])
+        || (RARITY_RANK[A.rarity] - RARITY_RANK[B.rarity])
+        || A.name.localeCompare(B.name);
+    });
+  for (const { slot, i } of view) {
+    const def = ITEMS[slot.item];
+    const cell = document.createElement('div');
+    cell.className = 'itemSlot';
+    if (def.rarity && def.rarity !== 'common') cell.classList.add('itemRarity-' + def.rarity);
+    cell.innerHTML = `<img src="assets/img/${def.img}" alt="${def.name}">${slot.qty > 1 ? `<span class="itemCount">${slot.qty}</span>` : ''}`;
+    cell.onclick = () => openBagItemDetail(i);
+    grid.appendChild(cell);
+  }
+  panel.appendChild(grid);
+}
+
+function openBagItemDetail(index) {
+  const slot = state.inventory.slots[index];
+  if (!slot) return;
+  const def = ITEMS[slot.item];
+  const actions = [];
+  if (def.type === 'consumable') {
+    actions.push({ label: 'Use', primary: true, onSelect: () => consumeItem(def) });
+  } else if (def.type === 'weapon' || def.type === 'armor') {
+    actions.push({ label: 'Equip', primary: true, onSelect: () => equipFromBag(index) });
+  }
+  actions.push({ label: 'Close' });
+  showItemDetail(def, { qty: slot.qty, actions });
+}
+
+function consumeItem(def) {
+  const { survival, inventory } = state;
+  if (def.heal) survival.heal(def.heal);
+  if (def.hunger) survival.eat(def.hunger);
+  if (def.thirst) survival.drink(def.thirst);
+  if (def.restoreStam) survival.stamina = Math.min(survival.maxStamina, survival.stamina + def.restoreStam);
+  inventory.remove(def.id, 1);
+  showToast(`Used ${def.name}.`);
+  requestSave();
+  renderInventory();
+}
+
+function equipFromBag(index) {
+  const def = state.inventory.equip(index);
+  if (def) { applyEquipmentBonuses(); showToast(`Equipped ${def.name}.`); requestSave(); }
+  renderInventory();
+}
+
+// ---------------- Equipment tab ----------------
+function equipStatSummary(def) {
+  const parts = [];
+  if (def.dmg) parts.push(`DMG ${def.dmg[0]}–${def.dmg[1]}`);
+  if (def.armor) parts.push(`ARM +${def.armor}`);
+  if (def.dmgBonus) parts.push(`DMG +${def.dmgBonus}`);
+  if (def.hpBonus) parts.push(`HP +${def.hpBonus}`);
+  return parts.join(' · ') || 'No bonuses';
+}
+
+function renderEquipTab() {
+  const { inventory, survival } = state;
+  const panel = document.getElementById('invPanelEquip');
+  panel.innerHTML = '';
+
+  for (const key in EQUIP_SLOT_NAMES) {
+    const itemId = inventory.equipment[key];
+    const card = document.createElement('div');
+    if (itemId) {
+      const def = ITEMS[itemId];
+      const color = (RARITY[def.rarity] || RARITY.common).color;
+      card.className = 'equipSlotCard';
+      card.innerHTML =
+        `<div class="eqIcon" style="border-color:${color}; box-shadow:0 0 8px ${color}44;"><img src="assets/img/${def.img}" alt="${def.name}"></div>` +
+        `<div class="eqInfo"><div class="eqName" style="color:${color}">${def.name}</div>` +
+        `<div class="eqStats">${equipStatSummary(def)}</div></div>` +
+        `<div class="eqSlotLabel">${EQUIP_SLOT_NAMES[key]}</div>`;
+      card.onclick = () => openEquippedDetail(key);
+    } else {
+      card.className = 'equipSlotCard empty';
+      card.innerHTML =
+        `<div class="eqIcon"></div>` +
+        `<div class="eqInfo"><div class="eqName">Empty</div>` +
+        `<div class="eqHint">Equip ${EQUIP_SLOT_NAMES[key].toLowerCase()} gear from Items</div></div>` +
+        `<div class="eqSlotLabel">${EQUIP_SLOT_NAMES[key]}</div>`;
+    }
+    panel.appendChild(card);
+  }
+
+  const w = inventory.weaponDef();
+  const dmgBonus = inventory.totalDmgBonus();
+  const dmgText = w ? `${w.dmg[0] + dmgBonus} – ${w.dmg[1] + dmgBonus}` : `${3 + dmgBonus} – ${5 + dmgBonus}`;
+  const hpBonus = inventory.totalHpBonus();
+  const stats = document.createElement('div');
+  stats.className = 'charStats';
+  stats.innerHTML =
+    `<div class="charStatsTitle">Character</div>` +
+    `<div class="statLine"><span>Attack Damage</span><b>${dmgText}</b></div>` +
+    `<div class="statLine"><span>Total Armor</span><b>${inventory.totalArmor()}</b></div>` +
+    `<div class="statLine"><span>Damage Bonus</span><b>+${dmgBonus}</b></div>` +
+    `<div class="statLine"><span>Max HP</span><b>${Math.round(survival.maxHp)}${hpBonus ? ` (+${hpBonus} from gear)` : ''}</b></div>` +
+    `<div class="statLine"><span>Level</span><b>${survival.level}</b></div>` +
+    `<div class="statLine"><span>XP</span><b>${Math.floor(survival.xp)} / ${survival.xpToNext}</b></div>` +
+    `<div class="statLine"><span>Gold</span><b>${survival.gold}</b></div>`;
+  panel.appendChild(stats);
+}
+
+function openEquippedDetail(key) {
+  const itemId = state.inventory.equipment[key];
+  if (!itemId) return;
+  const def = ITEMS[itemId];
+  showItemDetail(def, {
+    actions: [
+      { label: 'Unequip', primary: true, onSelect: () => {
+        if (!state.inventory.unequip(key)) showToast('Bag is full!');
+        else { applyEquipmentBonuses(); showToast(`Unequipped ${def.name}.`); }
+        renderInventory();
+      }},
+      { label: 'Close' },
+    ],
   });
-})();
+}
+
+// ---------------- Quest log tab ----------------
+function renderQuestTab() {
+  const { quests } = state;
+  const panel = document.getElementById('invPanelQuests');
+  panel.innerHTML = '';
+
+  if (quests.currentMain) panel.appendChild(questCard('Main Quest', quests.currentMain, quests.mainProgress, false));
+  if (quests.currentSide && quests.sideUnlocked) panel.appendChild(questCard('Side Quest', quests.currentSide, quests.sideProgress, true));
+
+  if (quests.log.length) {
+    const h = document.createElement('div');
+    h.className = 'questDoneHeader';
+    h.textContent = `Completed (${quests.log.length})`;
+    panel.appendChild(h);
+    [...quests.log].reverse().slice(0, 20).forEach(entry => {
+      const card = document.createElement('div');
+      card.className = 'questCard done';
+      card.innerHTML =
+        `<h4><span class="questDoneMark">✓</span>${entry.title}</h4>` +
+        `<p class="questText">${entry.text}</p>`;
+      panel.appendChild(card);
+    });
+  }
+}
+
+function questCard(tag, quest, progress, isSide) {
+  const { quests } = state;
+  const card = document.createElement('div');
+  card.className = 'questCard' + (isSide ? ' side' : '');
+
+  const rewards = [];
+  if (quest.reward) {
+    if (quest.reward.xp) rewards.push(quest.reward.xp + ' XP');
+    if (quest.reward.gold) rewards.push(quest.reward.gold + ' gold');
+    (quest.reward.items || []).forEach(id => rewards.push(ITEMS[id] ? ITEMS[id].name : id));
+  }
+
+  const summary = quests.objectiveSummary(progress);
+  const objs = (progress || []).map((o, i) => {
+    const count = o.count || 1;
+    const done = Math.min(o.done, count);
+    const pct = Math.round((done / count) * 100);
+    const complete = done >= count;
+    const tally = o.type === 'travel' ? (complete ? '✓' : '') : `${done}/${count}`;
+    return `<div class="objRow">` +
+      `<div class="objLabel"><span>${summary[i] || ''}</span><span>${tally}</span></div>` +
+      `<div class="objBar"><div class="objFill${complete ? ' full' : ''}" style="width:${pct}%"></div></div>` +
+      `</div>`;
+  }).join('');
+
+  card.innerHTML =
+    `<span class="questTag">${tag}</span>` +
+    `<h4>${quest.title}</h4>` +
+    `<p class="questText">${quest.text}</p>` +
+    objs +
+    (rewards.length ? `<div class="questRewards">Rewards: ${rewards.join(' · ')}</div>` : '');
+  return card;
+}
+
+// ---------------------------------------------------------------
+// SHOP (OLD EMBERIC)
+// ---------------------------------------------------------------
+const EMBERIC_BUY_STOCK = [
+  { item: 'potion_health', qty: 3 },
+  { item: 'potion_stamina', qty: 2 },
+  { item: 'water_flask', qty: 3 },
+  { item: 'bread', qty: 4 },
+  { item: 'meat', qty: 2 },
+  { item: 'berries', qty: 5 },
+  { item: 'hide', qty: 3 },
+  { item: 'iron_ore', qty: 3 },
+];
+const EMBERIC_RARE_CHANCE = 0.22;
+const EMBERIC_RARE_ITEMS = ['dagger_common', 'helm_common', 'shield_common', 'axe_common', 'sword_common', 'bow_common', 'armor_common'];
+
+function sellPrice(def) {
+  if (def.type === 'currency') return 0;
+  if (def.value) return def.value;
+  if (def.type === 'weapon' || def.type === 'armor') {
+    return { common: 12, magic: 30, rare: 80, legendary: 250 }[def.rarity] || 10;
+  }
+  if (def.type === 'consumable') return 5;
+  return 1;
+}
+function buyPrice(def) { return Math.max(1, Math.round(sellPrice(def) * 2.8)); }
+
+function openShop() {
+  renderShop();
+  openModal('shopModal');
+}
+
+function renderShop() {
+  const { inventory, survival } = state;
+
+  document.getElementById('shopGold').innerHTML =
+    `<img src="assets/img/item_gold.png" alt="gold" style="width:14px;height:14px;vertical-align:middle;margin-right:3px;">${survival.gold} gold`;
+
+  // Buy panel
+  const buyPanel = document.getElementById('shopPanelBuy');
+  buyPanel.innerHTML = '';
+  const buyStock = [...EMBERIC_BUY_STOCK];
+  if (Math.random() < EMBERIC_RARE_CHANCE) {
+    const rare = EMBERIC_RARE_ITEMS[Math.floor(Math.random() * EMBERIC_RARE_ITEMS.length)];
+    buyStock.push({ item: rare, qty: 1 });
+  }
+  buyStock.forEach(entry => {
+    const def = ITEMS[entry.item];
+    if (!def) return;
+    const price = buyPrice(def);
+    const canAfford = survival.gold >= price;
+    const row = document.createElement('div');
+    row.className = 'shopRow';
+    row.innerHTML =
+      `<img src="assets/img/${def.img}" alt="${def.name}">` +
+      `<span class="shopRowName">${def.name} ${entry.qty > 1 ? 'x' + entry.qty : ''}</span>` +
+      `<span class="shopRowCost ${canAfford ? 'canAfford' : 'cantAfford'}">${price}g</span>` +
+      `<button class="shopRowBtn ${canAfford ? '' : 'disabled'}">Buy</button>`;
+    if (canAfford) row.querySelector('button').onclick = () => {
+      survival.gold -= price;
+      inventory.add(def.id, entry.qty);
+      showToast(`Bought ${def.name}${entry.qty > 1 ? ' x' + entry.qty : ''}.`);
+      requestSave();
+      renderShop();
+    };
+    buyPanel.appendChild(row);
+  });
+
+  // Sell panel
+  const sellPanel = document.getElementById('shopPanelSell');
+  sellPanel.innerHTML = '';
+  const sellable = inventory.slots.filter(s => {
+    const d = ITEMS[s.item];
+    return d && d.type !== 'currency';
+  });
+  if (!sellable.length) {
+    sellPanel.innerHTML = '<div class="shopEmpty">Nothing to sell.</div>';
+  } else {
+    sellable.forEach((slot, idx) => {
+      const def = ITEMS[slot.item];
+      const price = sellPrice(def);
+      if (!price) return;
+      const row = document.createElement('div');
+      row.className = 'shopRow';
+      row.innerHTML =
+        `<img src="assets/img/${def.img}" alt="${def.name}">` +
+        `<span class="shopRowName">${def.name} ${slot.qty > 1 ? 'x' + slot.qty : ''}</span>` +
+        `<span class="shopRowCost canAfford">${price}g</span>` +
+        `<button class="shopRowBtn sell">Sell</button>`;
+      row.querySelector('button').onclick = () => {
+        inventory.remove(slot.item, 1);
+        survival.gold += price;
+        showToast(`Sold ${def.name}.`);
+        requestSave();
+        renderShop();
+      };
+      sellPanel.appendChild(row);
+    });
+  }
+}
+
+// ---------------------------------------------------------------
+// RENDERING
+// ---------------------------------------------------------------
+function render() {
+  if (!state) { ctx.clearRect(0,0,canvas.width,canvas.height); return; }
+  const { world, spawner, player, mainNPC, sideNPC, clock } = state;
+  ctx.clearRect(0, 0, camera.viewW, camera.viewH);
+
+  drawTiles();
+
+  // collect all drawables sorted by y for depth
+  const drawables = [];
+  for (const [cx, cy] of world.chunksInRadius(player.x, player.y, 900)) {
+    const chunk = world.getChunk(cx, cy);
+    for (const prop of chunk.props) {
+      if (camera.isVisible(prop.x, prop.y, 120)) drawables.push({ y: prop.y, draw: () => drawProp(prop) });
+    }
+  }
+  for (const c of spawner.caches) {
+    if (c.opened) continue;
+    if (camera.isVisible(c.x, c.y)) drawables.push({ y: c.y, draw: () => drawCache(c) });
+  }
+  for (const e of spawner.enemies) {
+    if (camera.isVisible(e.x, e.y, 150)) drawables.push({ y: e.y, draw: () => drawEnemy(e) });
+  }
+  if (camera.isVisible(mainNPC.x, mainNPC.y)) drawables.push({ y: mainNPC.y, draw: () => drawNPC(mainNPC) });
+  if (camera.isVisible(sideNPC.x, sideNPC.y)) drawables.push({ y: sideNPC.y, draw: () => drawNPC(sideNPC) });
+  drawables.push({ y: player.y, draw: () => drawPlayer(player) });
+
+  drawables.sort((a, b) => a.y - b.y);
+  for (const d of drawables) d.draw();
+
+  drawNightOverlay();
+  drawCompassHint();
+  drawMinimap();
+}
+
+function drawTiles() {
+  const { world, player } = state;
+  const startX = Math.floor((player.x - camera.viewW / 2) / TILE) - 1;
+  const endX = Math.ceil((player.x + camera.viewW / 2) / TILE) + 1;
+  const startY = Math.floor((player.y - camera.viewH / 2) / TILE) - 1;
+  const endY = Math.ceil((player.y + camera.viewH / 2) / TILE) + 1;
+  for (let ty = startY; ty <= endY; ty++) {
+    for (let tx = startX; tx <= endX; tx++) {
+      const wx = tx * TILE, wy = ty * TILE;
+      const biome = world.tileAtWorld(wx + 1, wy + 1);
+      const variants = TILE_IMG[biome] || TILE_IMG[BIOME.GRASS];
+      const variantIdx = ((tx * 31 + ty * 17) % variants.length + variants.length) % variants.length;
+      const variant = variants[variantIdx];
+      const img = images[variant];
+      const sp = camera.worldToScreen(wx, wy);
+      if (img) ctx.drawImage(img, Math.round(sp.x), Math.round(sp.y), TILE + 1, TILE + 1);
+    }
+  }
+}
+
+function drawProp(prop) {
+  const img = images[prop.img];
+  if (!img) return;
+  const sp = camera.worldToScreen(prop.x, prop.y);
+  const w = img.width, h = img.height;
+  ctx.drawImage(img, Math.round(sp.x - w / 2), Math.round(sp.y - h + 10), w, h);
+}
+
+function drawCache(c) {
+  const img = images[c.tier.img];
+  if (!img) return;
+  const sp = camera.worldToScreen(c.x, c.y);
+  ctx.save();
+  if (c.hitFlash > 0) ctx.filter = 'brightness(1.8)';
+  ctx.drawImage(img, Math.round(sp.x - img.width / 2), Math.round(sp.y - img.height / 2), img.width, img.height);
+  ctx.restore();
+  drawHPBar(sp.x, sp.y - img.height / 2 - 6, c.hp, c.tier.hp, '#dcb85a');
+}
+
+function drawEnemy(e) {
+  if (e.dead && e.deathTimer <= 0) return;
+  const img = images[e.stats.img];
+  if (!img) return;
+  const sp = camera.worldToScreen(e.x, e.y);
+  const scale = e.stats.scale || 1;
+  const w = img.width * scale, h = img.height * scale;
+  ctx.save();
+  if (e.dead) ctx.globalAlpha = Math.max(0, e.deathTimer / 0.5);
+  if (e.hitFlash > 0) ctx.filter = 'brightness(2)';
+  const flip = e.facing === 'left';
+  if (flip) { ctx.translate(sp.x, 0); ctx.scale(-1, 1); ctx.translate(-sp.x, 0); }
+  ctx.drawImage(img, Math.round(sp.x - w / 2), Math.round(sp.y - h + 8), w, h);
+  ctx.restore();
+  if (!e.dead) {
+    if (e.stats.isElite) {
+      ctx.fillStyle = '#d08bff';
+      ctx.font = 'bold 11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(e.stats.name, sp.x, sp.y - h + 2);
+    }
+    drawHPBar(sp.x, sp.y - h - 4, e.hp, e.stats.maxHp, e.stats.isElite ? '#d08bff' : '#e05a4e');
+  }
+}
+
+function drawNPC(npc) {
+  const img = images[npc.img];
+  if (!img) return;
+  const sp = camera.worldToScreen(npc.x, npc.y);
+  const bob = Math.sin(performance.now() / 500 + npc.bobPhase) * 2;
+  ctx.drawImage(img, Math.round(sp.x - img.width / 2), Math.round(sp.y - img.height + 10 + bob), img.width, img.height);
+  ctx.fillStyle = npc.kind === 'main' ? '#e9c877' : '#8ab0e9';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(npc.kind === 'main' ? '!' : '?', sp.x, sp.y - img.height + bob - 4);
+}
+
+function drawPlayer(player) {
+  const img = images['player.png'];
+  const sp = camera.worldToScreen(player.x, player.y);
+  const bob = player.moving ? Math.sin(performance.now() / 110) * 2 : 0;
+  ctx.save();
+  if (player.hitFlash > 0) ctx.filter = 'brightness(2) saturate(0.4)';
+  const flip = player.facing === 'left';
+  if (flip) { ctx.translate(sp.x, 0); ctx.scale(-1, 1); ctx.translate(-sp.x, 0); }
+  ctx.drawImage(img, Math.round(sp.x - img.width / 2), Math.round(sp.y - img.height + 12 + bob), img.width, img.height);
+  ctx.restore();
+
+  if (player.attackAnim > 0) {
+    ctx.save();
+    ctx.globalAlpha = player.attackAnim / 0.22;
+    ctx.strokeStyle = '#f5ecd0';
+    ctx.lineWidth = 3;
+    const hb = player.attackHitbox(ATTACK_RANGE);
+    const hbSp = camera.worldToScreen(hb.x, hb.y);
+    ctx.beginPath();
+    ctx.arc(hbSp.x, hbSp.y, hb.r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawHPBar(sx, sy, hp, maxHp, color) {
+  const w = 34, h = 4;
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(sx - w / 2, sy, w, h);
+  ctx.fillStyle = color;
+  ctx.fillRect(sx - w / 2, sy, w * Math.max(0, hp / maxHp), h);
+}
+
+function drawNightOverlay() {
+  const factor = state.clock.nightFactor();
+  if (factor <= 0.01) return;
+  ctx.fillStyle = `rgba(10,12,30,${factor * 0.62})`;
+  ctx.fillRect(0, 0, camera.viewW, camera.viewH);
+}
+
+function drawCompassHint() {
+  const { player, sideNPC, quests, mainNPC } = state;
+  const target = (!state.metSideNpc && quests.mainProgress && quests.mainProgress.some(o => o.type === 'travel')) ? sideNPC : null;
+  if (!target) return;
+  const dx = target.x - player.x, dy = target.y - player.y;
+  const ang = Math.atan2(dy, dx);
+  const cx = camera.viewW - 34, cy = 96;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(ang);
+  ctx.fillStyle = '#8ab0e9';
+  ctx.beginPath();
+  ctx.moveTo(12, 0); ctx.lineTo(-8, 7); ctx.lineTo(-8, -7); ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
